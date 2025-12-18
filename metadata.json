@@ -1,0 +1,5 @@
+{
+  "name": "SVG to Android Drawable Converter",
+  "description": "A professional tool to convert SVG icons into Android VectorDrawable XML format with real-time preview and AI-powered optimization.",
+  "requestFramePermissions": []
+}
