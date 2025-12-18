@@ -138,14 +138,26 @@ export const svgToAndroidXml = (svgString: string): string => {
 
 export const getKotlinConverterLogic = (): string => {
   return `import kotlin.math.*
-import net.devrieze.xmlutil.*
-import net.devrieze.xmlutil.dom.*
+import net.devrieze.xmlutil.XmlStreaming
+import net.devrieze.xmlutil.EventType
 
 /**
  * KMP Compatible SVG to Android VectorDrawable XML Converter Logic.
- * Requires: xmlutil for multiplatform DOM parsing.
- * Supports: iOS, Android, Desktop, Web (via KMP).
+ * This implementation includes a manual DOM-like structure builder using XmlReader.
  */
+
+interface SvgNode {
+    val tagName: String
+    val attributes: Map<String, String>
+    val children: List<SvgNode>
+    fun getAttribute(name: String): String? = attributes[name]
+}
+
+data class SvgElement(
+    override val tagName: String,
+    override val attributes: Map<String, String>,
+    override val children: MutableList<SvgNode> = mutableListOf()
+) : SvgNode
 
 data class Matrix(
     val a: Double = 1.0, val b: Double = 0.0,
@@ -168,29 +180,24 @@ data class Matrix(
         val tv1y = (rx * cosA) * b + (rx * sinA) * d
         val tv2x = (-ry * sinA) * a + (ry * cosA) * c
         val tv2y = (-ry * sinA) * b + (ry * cosA) * d
-        return Triple(sqrt(tv1x*tv1x + tv1y*tv1y), sqrt(tv2x*tv2x + tv2y*tv2y), atan2(tv1y, tv1x) * 180.0 / PI)
+        return Triple(sqrt(tv1x * tv1x + tv1y * tv1y), sqrt(tv2x * tv2x + tv2y * tv2y), atan2(tv1y, tv1x) * 180.0 / PI)
     }
 }
 
 class SvgToAndroidConverter {
-
     private val transformRegex = Regex("(\\\\w+)\\\\s*\\\\(([^)]+)\\\\)")
     private val tokenRegex = Regex("[a-df-z]|[+-]?\\\\d*\\\\.?\\\\d+(?:[eE][+-]?\\\\d+)?", RegexOption.IGNORE_CASE)
 
     fun convert(svgString: String): String {
-        // Using xmlutil DOM for multiplatform compatibility
-        val doc = createDocument(svgString)
-        val svg = doc.documentElement ?: throw IllegalArgumentException("Missing SVG root")
-        
-        val viewBoxAttr = svg.getAttribute("viewBox") ?: "0 0 24 24"
+        val root = createDocument(svgString)
+        val viewBoxAttr = root.getAttribute("viewBox") ?: "0 0 24 24"
         val vb = viewBoxAttr.split(Regex("[ ,]+")).map { it.toDoubleOrNull() ?: 0.0 }
-        val vbW = if (vb.size >= 4) vb[2] else 24.0
-        val vbH = if (vb.size >= 4) vb[3] else 24.0
-        val vbX = if (vb.size >= 4) vb[0] else 0.0
-        val vbY = if (vb.size >= 4) vb[1] else 0.0
+        val vbW = vb.getOrElse(2) { 24.0 }
+        val vbH = vb.getOrElse(3) { 24.0 }
+        val vbX = vb.getOrElse(0) { 0.0 }
+        val vbY = vb.getOrElse(1) { 0.0 }
 
         val globalMatrix = Matrix(e = -vbX, f = -vbY)
-        
         val result = StringBuilder()
         result.append("<vector xmlns:android=\\"http://schemas.android.com/apk/res/android\\"\\n")
         result.append("    android:width=\\"\${vbW}dp\\"\\n")
@@ -198,47 +205,40 @@ class SvgToAndroidConverter {
         result.append("    android:viewportWidth=\\"\${vbW}\\"\\n")
         result.append("    android:viewportHeight=\\"\${vbH}\\">\\n")
 
-        processChildren(svg, globalMatrix, result)
+        root.children.forEach { processNode(it, globalMatrix, result) }
 
         result.append("</vector>")
         return result.toString()
     }
 
-    private fun processChildren(parent: Element, currentMatrix: Matrix, result: StringBuilder) {
-        val children = parent.childNodes
-        for (i in 0 until children.length) {
-            val node = children.item(i)
-            if (node is Element) {
-                processNode(node, currentMatrix, result)
+    private fun processNode(node: SvgNode, currentMatrix: Matrix, result: StringBuilder) {
+        if (node.getAttribute("opacity") == "0") return
+        val tag = node.tagName.lowercase()
+        val nodeMatrix = currentMatrix.multiply(parseTransform(node.getAttribute("transform")))
+
+        when (tag) {
+            "g" -> node.children.forEach { processNode(it, nodeMatrix, result) }
+            "path" -> appendPath(node.getAttribute("d") ?: "", node, nodeMatrix, result)
+            "rect" -> {
+                val x = node.getAttribute("x")?.toDoubleOrNull() ?: 0.0
+                val y = node.getAttribute("y")?.toDoubleOrNull() ?: 0.0
+                val w = node.getAttribute("width")?.toDoubleOrNull() ?: 0.0
+                val h = node.getAttribute("height")?.toDoubleOrNull() ?: 0.0
+                appendPath("M\$x,\$y h\$w v\$h h-\$w z", node, nodeMatrix, result)
+            }
+            "circle" -> {
+                val cx = node.getAttribute("cx")?.toDoubleOrNull() ?: 0.0
+                val cy = node.getAttribute("cy")?.toDoubleOrNull() ?: 0.0
+                val r = node.getAttribute("r")?.toDoubleOrNull() ?: 0.0
+                appendPath("M\${cx-r},\$cy a\$r,\$r 0 1,0 \${r*2},0 a\$r,\$r 0 1,0 \${-r*2},0", node, nodeMatrix, result)
             }
         }
     }
 
-    private fun processNode(el: Element, currentMatrix: Matrix, result: StringBuilder) {
-        if (el.getAttribute("opacity") == "0") return
-
-        val nodeMatrix = currentMatrix.multiply(parseTransform(el.getAttribute("transform")))
-        val tag = el.tagName.lowercase()
-
-        when (tag) {
-            "g" -> processChildren(el, nodeMatrix, result)
-            "path" -> {
-                val d = el.getAttribute("d") ?: ""
-                val flattened = flattenPath(d, nodeMatrix)
-                val fill = el.getAttribute("fill") ?: "#000000"
-                result.append("  <path\\n      android:pathData=\\"\${flattened}\\"\\n      android:fillColor=\\"\${fill}\\"/>\\n")
-            }
-            "rect" -> {
-                val x = el.getAttribute("x")?.toDoubleOrNull() ?: 0.0
-                val y = el.getAttribute("y")?.toDoubleOrNull() ?: 0.0
-                val w = el.getAttribute("width")?.toDoubleOrNull() ?: 0.0
-                val h = el.getAttribute("height")?.toDoubleOrNull() ?: 0.0
-                val d = "M\$x,\$y h\$w v\$h h-\$w z"
-                val flattened = flattenPath(d, nodeMatrix)
-                val fill = el.getAttribute("fill") ?: "#000000"
-                result.append("  <path\\n      android:pathData=\\"\${flattened}\\"\\n      android:fillColor=\\"\${fill}\\"/>\\n")
-            }
-        }
+    private fun appendPath(d: String, node: SvgNode, matrix: Matrix, result: StringBuilder) {
+        val flattened = flattenPath(d, matrix)
+        val fill = node.getAttribute("fill") ?: "#000000"
+        result.append("  <path android:pathData=\\"\${flattened}\\" android:fillColor=\\"\${fill}\\"/>\\n")
     }
 
     private fun parseTransform(transformStr: String?): Matrix {
@@ -255,7 +255,6 @@ class SvgToAndroidConverter {
                     m = m.multiply(Matrix(a = cosA, b = sinA, c = -sinA, d = cosA))
                 }
                 "scale" -> m = m.multiply(Matrix(a = args.getOrElse(0) { 1.0 }, d = args.getOrElse(1) { args.getOrElse(0) { 1.0 } }))
-                "matrix" -> if (args.size == 6) m = m.multiply(Matrix(args[0], args[1], args[2], args[3], args[4], args[5]))
             }
         }
         return m
@@ -265,9 +264,6 @@ class SvgToAndroidConverter {
         val tokens = tokenRegex.findAll(d).map { it.value }.toList()
         var i = 0; var curX = 0.0; var curY = 0.0; var startX = 0.0; var startY = 0.0
         var cmd = ""; val res = StringBuilder()
-        
-        fun fmt(d: Double) = d.toString().take(7)
-
         while (i < tokens.size) {
             val token = tokens[i]
             if (token[0].isLetter()) { cmd = token; i++ }
@@ -276,20 +272,12 @@ class SvgToAndroidConverter {
                 "M" -> {
                     var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble()
                     if (isRel) { x += curX; y += curY }; val p = matrix.apply(x, y)
-                    res.append("M\${fmt(p.first)},\${fmt(p.second)} "); curX = x; curY = y; startX = x; startY = y; cmd = if (isRel) "l" else "L"
+                    res.append("M\${p.first},\${p.second} "); curX = x; curY = y; startX = x; startY = y; cmd = if (isRel) "l" else "L"
                 }
                 "L" -> {
                     var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble()
                     if (isRel) { x += curX; y += curY }; val p = matrix.apply(x, y)
-                    res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curX = x; curY = y
-                }
-                "H" -> {
-                    var x = tokens[i++].toDouble(); if (isRel) x += curX; val p = matrix.apply(x, curY)
-                    res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curX = x
-                }
-                "V" -> {
-                    var y = tokens[i++].toDouble(); if (isRel) y += curY; val p = matrix.apply(curX, y)
-                    res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curY = y
+                    res.append("L\${p.first},\${p.second} "); curX = x; curY = y
                 }
                 "Z" -> { res.append("Z "); curX = startX; curY = startY }
             }
@@ -297,11 +285,37 @@ class SvgToAndroidConverter {
         return res.toString().trim()
     }
 
-    // Helper to create a document using xmlutil (Placeholder for platform-specific impl)
-    private fun createDocument(xml: String): Document {
-        // In real KMP project, you'd use net.devrieze.xmlutil.dom.DocumentBuilder or similar
-        // For example: return XmlDomParser.parse(xml)
-        throw NotImplementedError("Integrate with your KMP XML library (e.g., xmlutil)")
+    /**
+     * Complete implementation of createDocument using XmlReader.
+     * Parses the XML stream into a simple tree structure.
+     */
+    private fun createDocument(xml: String): SvgNode {
+        val reader = XmlStreaming.newReader(xml)
+        val stack = mutableListOf<SvgElement>()
+        var root: SvgElement? = null
+
+        while (reader.hasNext()) {
+            when (reader.next()) {
+                EventType.START_ELEMENT -> {
+                    val attrs = mutableMapOf<String, String>()
+                    for (i in 0 until reader.attributeCount) {
+                        attrs[reader.getAttributeLocalName(i)] = reader.getAttributeValue(i)
+                    }
+                    val el = SvgElement(reader.localName, attrs)
+                    if (stack.isEmpty()) {
+                        root = el
+                    } else {
+                        stack.last().children.add(el)
+                    }
+                    stack.add(el)
+                }
+                EventType.END_ELEMENT -> {
+                    if (stack.isNotEmpty()) stack.removeAt(stack.size - 1)
+                }
+                else -> {}
+            }
+        }
+        return root ?: throw IllegalArgumentException("Invalid XML")
     }
 }
 `;
