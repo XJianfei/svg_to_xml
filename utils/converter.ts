@@ -40,6 +40,44 @@ class Matrix {
   }
 }
 
+interface GradientStop {
+  offset: string;
+  color: string;
+  opacity?: string;
+}
+
+interface GradientData {
+  id: string;
+  type: 'linear' | 'radial';
+  stops: GradientStop[];
+  x1?: string; y1?: string; x2?: string; y2?: string;
+  cx?: string; cy?: string; r?: string;
+  units?: 'objectBoundingBox' | 'userSpaceOnUse';
+  href?: string;
+}
+
+const parseColor = (color: string, opacity: string = '1'): string => {
+  if (!color || color === 'none') return '#00000000';
+  
+  let hex = '#000000';
+  if (color.startsWith('#')) {
+    if (color.length === 4) { // #RGB
+      hex = '#' + color[1] + color[1] + color[2] + color[2] + color[3] + color[3];
+    } else {
+      hex = color.slice(0, 7);
+    }
+  } else if (color.startsWith('rgb')) {
+    const parts = color.match(/\d+/g);
+    if (parts && parts.length >= 3) {
+      hex = '#' + parts.slice(0, 3).map(x => parseInt(x).toString(16).padStart(2, '0')).join('');
+    }
+  }
+  
+  const alphaVal = Math.max(0, Math.min(1, parseFloat(opacity)));
+  const alphaHex = Math.round(alphaVal * 255).toString(16).padStart(2, '0').toUpperCase();
+  return '#' + alphaHex + hex.slice(1).toUpperCase();
+};
+
 const parseSvgTransform = (transformStr: string | null): Matrix => {
   let matrix = new Matrix();
   if (!transformStr) return matrix;
@@ -65,11 +103,18 @@ const parseSvgTransform = (transformStr: string | null): Matrix => {
   return matrix;
 };
 
-const transformPath = (d: string, matrix: Matrix): string => {
+const transformPath = (d: string, matrix: Matrix): { pathData: string, bbox: { minX: number, minY: number, maxX: number, maxY: number } } => {
   const tokens = d.match(/[a-df-z]|[+-]?\d*\.?\d+(?:[eE][+-]?\d+)?/gi) || [];
   let result = ''; let i = 0; let curX = 0, curY = 0; let startX = 0, startY = 0; let cmd = '';
   const fmt = (num: number) => parseFloat(num.toFixed(3)).toString();
   
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const updateBBox = (x: number, y: number) => {
+    const p = matrix.apply(x, y);
+    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+  };
+
   while (i < tokens.length) {
     const token = tokens[i];
     if (/[a-df-z]/i.test(token)) { cmd = token; i++; }
@@ -78,57 +123,64 @@ const transformPath = (d: string, matrix: Matrix): string => {
     
     switch (upperCmd) {
       case 'M': {
+        if (i + 1 >= tokens.length) { i = tokens.length; break; }
         let x = parseFloat(tokens[i++]), y = parseFloat(tokens[i++]);
         if (isRel) { x += curX; y += curY; }
         const p = matrix.apply(x, y); result += `M${fmt(p.x)},${fmt(p.y)} `;
-        curX = x; curY = y; startX = x; startY = y; cmd = isRel ? 'l' : 'L';
+        updateBBox(x, y); curX = x; curY = y; startX = x; startY = y; cmd = isRel ? 'l' : 'L';
         break;
       }
       case 'L': {
+        if (i + 1 >= tokens.length) { i = tokens.length; break; }
         let x = parseFloat(tokens[i++]), y = parseFloat(tokens[i++]);
         if (isRel) { x += curX; y += curY; }
         const p = matrix.apply(x, y); result += `L${fmt(p.x)},${fmt(p.y)} `;
-        curX = x; curY = y;
+        updateBBox(x, y); curX = x; curY = y;
         break;
       }
       case 'H': {
+        if (i >= tokens.length) { i = tokens.length; break; }
         let x = parseFloat(tokens[i++]);
         if (isRel) { x += curX; }
         const p = matrix.apply(x, curY); result += `L${fmt(p.x)},${fmt(p.y)} `;
-        curX = x;
+        updateBBox(x, curY); curX = x;
         break;
       }
       case 'V': {
+        if (i >= tokens.length) { i = tokens.length; break; }
         let y = parseFloat(tokens[i++]);
         if (isRel) { y += curY; }
         const p = matrix.apply(curX, y); result += `L${fmt(p.x)},${fmt(p.y)} `;
-        curY = y;
+        updateBBox(curX, y); curY = y;
         break;
       }
       case 'C': {
+        if (i + 5 >= tokens.length) { i = tokens.length; break; }
         let x1 = parseFloat(tokens[i++]), y1 = parseFloat(tokens[i++]), 
             x2 = parseFloat(tokens[i++]), y2 = parseFloat(tokens[i++]), 
             x = parseFloat(tokens[i++]), y = parseFloat(tokens[i++]);
         if (isRel) { x1 += curX; y1 += curY; x2 += curX; y2 += curY; x += curX; y += curY; }
         const p1 = matrix.apply(x1, y1), p2 = matrix.apply(x2, y2), p = matrix.apply(x, y);
         result += `C${fmt(p1.x)},${fmt(p1.y)} ${fmt(p2.x)},${fmt(p2.y)} ${fmt(p.x)},${fmt(p.y)} `;
+        updateBBox(x1, y1); updateBBox(x2, y2); updateBBox(x, y);
         curX = x; curY = y;
         break;
       }
       case 'A': {
+        if (i + 6 >= tokens.length) { i = tokens.length; break; }
         let rx = parseFloat(tokens[i++]), ry = parseFloat(tokens[i++]), rot = parseFloat(tokens[i++]), laf = tokens[i++], swf = tokens[i++], x = parseFloat(tokens[i++]), y = parseFloat(tokens[i++]);
         if (isRel) { x += curX; y += curY; }
         const p = matrix.apply(x, y); const arc = matrix.applyToArc(rx, ry, rot);
         const newSwf = (matrix.a * matrix.d - matrix.b * matrix.c) < 0 ? (swf === '1' ? '0' : '1') : swf;
         result += `A${fmt(arc.rx)},${fmt(arc.ry)} ${fmt(arc.rotation)} ${laf},${newSwf} ${fmt(p.x)},${fmt(p.y)} `;
-        curX = x; curY = y;
+        updateBBox(x, y); curX = x; curY = y;
         break;
       }
       case 'Z': result += 'Z '; curX = startX; curY = startY; break;
       default: i++;
     }
   }
-  return result.trim();
+  return { pathData: result.trim(), bbox: { minX, minY, maxX, maxY } };
 };
 
 export const svgToAndroidXml = (svgString: string): string => {
@@ -139,43 +191,189 @@ export const svgToAndroidXml = (svgString: string): string => {
   
   const viewBoxStr = svg.getAttribute('viewBox') || `0 0 ${svg.getAttribute('width') || 24} ${svg.getAttribute('height') || 24}`;
   const viewBox = viewBoxStr.split(/[ ,]+/).map(Number);
+  const vbX = viewBox[0] || 0;
+  const vbY = viewBox[1] || 0;
   const vbW = viewBox[2] || 24; 
   const vbH = viewBox[3] || 24;
-  const globalMatrix = new Matrix(1, 0, 0, 1, -(viewBox[0] || 0), -(viewBox[1] || 0));
+  const globalMatrix = new Matrix(1, 0, 0, 1, -vbX, -vbY);
 
-  let xml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"\n    android:width="${svg.getAttribute('width')?.replace('px', '') || vbW}dp"\n    android:height="${svg.getAttribute('height')?.replace('px', '') || vbH}dp"\n    android:viewportWidth="${vbW}"\n    android:viewportHeight="${vbH}">\n`;
+  // Parse style tag
+  const classStyles: Record<string, Record<string, string>> = {};
+  const styleEl = doc.querySelector('style');
+  if (styleEl) {
+    const css = styleEl.textContent || '';
+    const rules = css.split('}');
+    rules.forEach(rule => {
+      const parts = rule.split('{');
+      if (parts.length === 2) {
+        const selectors = parts[0].trim().split(',');
+        const declarations = parts[1].trim().split(';');
+        const styleMap: Record<string, string> = {};
+        declarations.forEach(decl => {
+          const [prop, val] = decl.split(':');
+          if (prop && val) styleMap[prop.trim()] = val.trim();
+        });
+        selectors.forEach(sel => {
+          const className = sel.trim().startsWith('.') ? sel.trim().slice(1) : sel.trim();
+          classStyles[className] = styleMap;
+        });
+      }
+    });
+  }
+
+  const gradients: Record<string, GradientData> = {};
+  const gradientElements = doc.querySelectorAll('linearGradient, radialGradient');
+  
+  gradientElements.forEach(g => {
+    const id = g.getAttribute('id');
+    if (!id) return;
+    const stops = Array.from(g.querySelectorAll('stop')).map(s => ({
+      offset: s.getAttribute('offset') || '0',
+      color: s.getAttribute('stop-color') || '#000',
+      opacity: s.getAttribute('stop-opacity') || '1'
+    }));
+    
+    const type = g.tagName.toLowerCase() === 'lineargradient' ? 'linear' : 'radial';
+    const href = g.getAttribute('xlink:href') || g.getAttribute('href');
+    
+    const gradData: GradientData = {
+      id, type, stops,
+      units: (g.getAttribute('gradientUnits') as any) || 'objectBoundingBox',
+      href: href ? href.substring(1) : undefined
+    };
+
+    if (type === 'linear') {
+      gradData.x1 = g.getAttribute('x1') || undefined;
+      gradData.y1 = g.getAttribute('y1') || undefined;
+      gradData.x2 = g.getAttribute('x2') || undefined;
+      gradData.y2 = g.getAttribute('y2') || undefined;
+    } else {
+      gradData.cx = g.getAttribute('cx') || undefined;
+      gradData.cy = g.getAttribute('cy') || undefined;
+      gradData.r = g.getAttribute('r') || undefined;
+    }
+    gradients[id] = gradData;
+  });
+
+  // Resolve inheritance
+  Object.keys(gradients).forEach(id => {
+    let current = gradients[id];
+    let visited = new Set([id]);
+    while (current.href && gradients[current.href]) {
+      if (visited.has(current.href)) break; 
+      const parent = gradients[current.href];
+      if (current.stops.length === 0) current.stops = [...parent.stops];
+      if (current.type === 'linear') {
+        if (current.x1 === undefined) current.x1 = parent.x1;
+        if (current.y1 === undefined) current.y1 = parent.y1;
+        if (current.x2 === undefined) current.x2 = parent.x2;
+        if (current.y2 === undefined) current.y2 = parent.y2;
+      } else {
+        if (current.cx === undefined) current.cx = parent.cx;
+        if (current.cy === undefined) current.cy = parent.cy;
+        if (current.r === undefined) current.r = parent.r;
+      }
+      visited.add(current.href);
+      current = parent;
+    }
+  });
+
+  let xml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"\n    xmlns:aapt="http://schemas.android.com/aapt"\n    android:width="${svg.getAttribute('width')?.replace('px', '') || vbW}dp"\n    android:height="${svg.getAttribute('height')?.replace('px', '') || vbH}dp"\n    android:viewportWidth="${vbW}"\n    android:viewportHeight="${vbH}">\n`;
 
   const processNode = (el: Element, currentMatrix: Matrix): string => {
     if (el.getAttribute('opacity') === '0' || el.getAttribute('display') === 'none') return '';
     const tag = el.tagName.toLowerCase();
-    const nodeMatrix = currentMatrix.multiply(parseSvgTransform(el.getAttribute('transform')));
+    
+    // Resolve class styles
+    const elClass = el.getAttribute('class');
+    const mergedStyles: Record<string, string> = {};
+    if (elClass && classStyles[elClass]) Object.assign(mergedStyles, classStyles[elClass]);
+    // Individual attributes override styles
+    Array.from(el.attributes).forEach(attr => mergedStyles[attr.name] = attr.value);
+
+    const transform = mergedStyles['transform'];
+    const nodeMatrix = currentMatrix.multiply(parseSvgTransform(transform));
     
     if (tag === 'g') {
       return Array.from(el.children).map(child => processNode(child, nodeMatrix)).join('');
     }
 
     let d = '';
-    if (tag === 'path') d = el.getAttribute('d') || '';
+    if (tag === 'path') d = mergedStyles['d'] || '';
     else if (tag === 'rect') {
-      const x = parseFloat(el.getAttribute('x') || '0'), y = parseFloat(el.getAttribute('y') || '0'), w = parseFloat(el.getAttribute('width') || '0'), h = parseFloat(el.getAttribute('height') || '0');
-      d = `M${x},${y}h${w}v${h}h${-w}z`;
+      const x = parseFloat(mergedStyles['x'] || '0'), y = parseFloat(mergedStyles['y'] || '0'), w = parseFloat(mergedStyles['width'] || '0'), h = parseFloat(mergedStyles['height'] || '0');
+      const rx = parseFloat(mergedStyles['rx'] || '0'), ry = parseFloat(mergedStyles['ry'] || '0') || rx;
+      if (rx === 0 && ry === 0) {
+        d = `M${x},${y}h${w}v${h}h${-w}z`;
+      } else {
+        d = `M${x + rx},${y} h${w - 2 * rx} a${rx},${ry} 0 0 1 ${rx},${ry} v${h - 2 * ry} a${rx},${ry} 0 0 1 ${-rx},${ry} h${-w + 2 * rx} a${rx},${ry} 0 0 1 ${-rx},${-ry} v${-h + 2 * ry} a${rx},${ry} 0 0 1 ${rx},${-ry} z`;
+      }
     } else if (tag === 'circle') {
-      const cx = parseFloat(el.getAttribute('cx') || '0'), cy = parseFloat(el.getAttribute('cy') || '0'), r = parseFloat(el.getAttribute('r') || '0');
+      const cx = parseFloat(mergedStyles['cx'] || '0'), cy = parseFloat(mergedStyles['cy'] || '0'), r = parseFloat(mergedStyles['r'] || '0');
       d = `M${cx - r},${cy} a${r},${r} 0 1,0 ${r * 2},0 a${r},${r} 0 1,0 ${-r * 2},0`;
     }
 
     if (d) {
-      const flattenedData = transformPath(d, nodeMatrix);
-      const fill = el.getAttribute('fill') || '#000000';
-      const stroke = el.getAttribute('stroke');
-      const strokeWidth = el.getAttribute('stroke-width');
+      const res = transformPath(d, nodeMatrix);
+      if (!res.pathData) return '';
+      const { pathData, bbox } = res;
+      const fill = mergedStyles['fill'];
+      const fillOpacity = mergedStyles['fill-opacity'] || mergedStyles['opacity'] || '1';
+      const stroke = mergedStyles['stroke'];
+      const strokeWidth = mergedStyles['stroke-width'];
+      const strokeOpacity = mergedStyles['stroke-opacity'] || mergedStyles['opacity'] || '1';
       
-      let pathXml = `  <path\n      android:pathData="${flattenedData}"\n      android:fillColor="${fill === 'none' ? '#00000000' : fill}"`;
-      if (stroke && stroke !== 'none') {
-        pathXml += `\n      android:strokeColor="${stroke}"`;
-        if (strokeWidth) pathXml += `\n      android:strokeWidth="${strokeWidth}"`;
+      let pathXml = `  <path\n      android:pathData="${pathData}"`;
+      
+      const isGradient = fill?.startsWith('url(#');
+      if (isGradient) {
+        const gradId = fill!.substring(5, fill!.length - 1);
+        const grad = gradients[gradId];
+        if (grad) {
+          if (fillOpacity !== '1') pathXml += `\n      android:fillAlpha="${fillOpacity}"`;
+          pathXml += `>\n    <aapt:attr name="android:fillColor">\n      <gradient`;
+          
+          const parseCoord = (val: string | undefined, size: number, min: number, def: string) => {
+            const v = val ?? def;
+            if (v.endsWith('%')) return min + (parseFloat(v) / 100) * size;
+            const num = parseFloat(v);
+            if (grad.units === 'objectBoundingBox') return min + num * size;
+            return num;
+          };
+
+          if (grad.type === 'linear') {
+            const w = isFinite(bbox.maxX) ? bbox.maxX - bbox.minX : 0;
+            const h = isFinite(bbox.maxY) ? bbox.maxY - bbox.minY : 0;
+            const x1 = parseCoord(grad.x1, w, bbox.minX, '0');
+            const y1 = parseCoord(grad.y1, h, bbox.minY, '0');
+            const x2 = parseCoord(grad.x2, w, bbox.minX, '1');
+            const y2 = parseCoord(grad.y2, h, bbox.minY, '0');
+            
+            pathXml += ` \n          android:startX="${x1.toFixed(3)}"\n          android:startY="${y1.toFixed(3)}"\n          android:endX="${x2.toFixed(3)}"\n          android:endY="${y2.toFixed(3)}"\n          android:type="linear">`;
+          } else {
+            const w = isFinite(bbox.maxX) ? bbox.maxX - bbox.minX : 0;
+            const h = isFinite(bbox.maxY) ? bbox.maxY - bbox.minY : 0;
+            const cx = parseCoord(grad.cx, w, bbox.minX, '0.5');
+            const cy = parseCoord(grad.cy, h, bbox.minY, '0.5');
+            const r = parseCoord(grad.r, Math.sqrt(w*w + h*h), 0, '0.5');
+            pathXml += ` \n          android:centerX="${cx.toFixed(3)}"\n          android:centerY="${cy.toFixed(3)}"\n          android:gradientRadius="${r.toFixed(3)}"\n          android:type="radial">`;
+          }
+          grad.stops.forEach(s => {
+            const offset = s.offset.includes('%') ? parseFloat(s.offset) / 100 : parseFloat(s.offset);
+            pathXml += `\n        <item android:offset="${offset}" android:color="${parseColor(s.color, s.opacity)}"/>`;
+          });
+          pathXml += `\n      </gradient>\n    </aapt:attr>\n  </path>\n`;
+        } else {
+           pathXml += `\n      android:fillColor="#000000"/>\n`;
+        }
+      } else {
+        pathXml += `\n      android:fillColor="${parseColor(fill || '#000000', fillOpacity)}"`;
+        if (stroke && stroke !== 'none') {
+          pathXml += `\n      android:strokeColor="${parseColor(stroke, strokeOpacity)}"`;
+          if (strokeWidth) pathXml += `\n      android:strokeWidth="${strokeWidth}"`;
+        }
+        pathXml += `/>\n`;
       }
-      pathXml += `/>\n`;
       return pathXml;
     }
     return '';
@@ -253,6 +451,7 @@ class SvgToAndroidConverter {
         val globalMatrix = Matrix(e = -vbX, f = -vbY)
         val result = StringBuilder()
         result.append("<vector xmlns:android=\\"http://schemas.android.com/apk/res/android\\"\\n")
+        result.append("    xmlns:aapt=\\"http://schemas.android.com/aapt\\"\\n")
         result.append("    android:width=\\"\${vbW}dp\\"\\n")
         result.append("    android:height=\\"\${vbH}dp\\"\\n")
         result.append("    android:viewportWidth=\\"\${vbW}\\"\\n")

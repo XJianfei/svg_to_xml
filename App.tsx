@@ -39,7 +39,6 @@ const VectorXmlPreview = ({ xml }: { xml: string }) => {
     if (!xml) return null;
     try {
       const parser = new DOMParser();
-      // Use text/xml to avoid HTML auto-corrections
       const doc = parser.parseFromString(xml, 'text/xml');
       const vector = doc.getElementsByTagName('vector')[0];
       if (!vector) return null;
@@ -48,30 +47,73 @@ const VectorXmlPreview = ({ xml }: { xml: string }) => {
       const viewportHeight = vector.getAttribute('android:viewportHeight') || '24';
       
       const pathElements = Array.from(doc.getElementsByTagName('path'));
-      
+      const defs: React.ReactNode[] = [];
+      const paths: React.ReactNode[] = [];
+
+      pathElements.forEach((p, i) => {
+        const d = p.getAttribute('android:pathData');
+        if (!d) return;
+
+        let fill = p.getAttribute('android:fillColor') || '#000000';
+        const stroke = p.getAttribute('android:strokeColor');
+        const strokeWidth = p.getAttribute('android:strokeWidth');
+
+        // Handle aapt gradients
+        const aaptAttr = p.getElementsByTagName('aapt:attr')[0];
+        if (aaptAttr && aaptAttr.getAttribute('name') === 'android:fillColor') {
+          const grad = aaptAttr.getElementsByTagName('gradient')[0];
+          if (grad) {
+            const gradId = `grad_preview_${i}`;
+            const type = grad.getAttribute('android:type');
+            const stops = Array.from(grad.getElementsByTagName('item')).map((item, j) => (
+              <stop key={j} offset={item.getAttribute('android:offset')} stopColor={item.getAttribute('android:color')} />
+            ));
+
+            if (type === 'linear') {
+              defs.push(
+                <linearGradient 
+                  key={gradId} id={gradId} 
+                  x1={grad.getAttribute('android:startX')} y1={grad.getAttribute('android:startY')} 
+                  x2={grad.getAttribute('android:endX')} y2={grad.getAttribute('android:endY')}
+                  gradientUnits="userSpaceOnUse"
+                >
+                  {stops}
+                </linearGradient>
+              );
+            } else {
+              defs.push(
+                <radialGradient 
+                  key={gradId} id={gradId} 
+                  cx={grad.getAttribute('android:centerX')} cy={grad.getAttribute('android:centerY')} 
+                  r={grad.getAttribute('android:gradientRadius')}
+                  gradientUnits="userSpaceOnUse"
+                >
+                  {stops}
+                </radialGradient>
+              );
+            }
+            fill = `url(#${gradId})`;
+          }
+        }
+
+        paths.push(
+          <path 
+            key={i} d={d} 
+            fill={fill} 
+            stroke={stroke || 'none'} 
+            strokeWidth={strokeWidth || '0'} 
+          />
+        );
+      });
+
       return (
         <svg 
           viewBox={`0 0 ${viewportWidth} ${viewportHeight}`} 
-          width="100%" 
-          height="100%" 
+          width="100%" height="100%" 
           className="max-w-[120px] max-h-[120px] drop-shadow-md"
         >
-          {pathElements.map((p, i) => {
-            const d = p.getAttribute('android:pathData');
-            const fill = p.getAttribute('android:fillColor');
-            const stroke = p.getAttribute('android:strokeColor');
-            const strokeWidth = p.getAttribute('android:strokeWidth');
-            if (!d) return null;
-            return (
-              <path 
-                key={i} 
-                d={d} 
-                fill={fill || '#000000'} 
-                stroke={stroke || 'none'} 
-                strokeWidth={strokeWidth || '0'} 
-              />
-            );
-          })}
+          <defs>{defs}</defs>
+          {paths}
         </svg>
       );
     } catch (e) {
