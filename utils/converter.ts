@@ -69,11 +69,13 @@ const transformPath = (d: string, matrix: Matrix): string => {
   const tokens = d.match(/[a-df-z]|[+-]?\d*\.?\d+(?:[eE][+-]?\d+)?/gi) || [];
   let result = ''; let i = 0; let curX = 0, curY = 0; let startX = 0, startY = 0; let cmd = '';
   const fmt = (num: number) => parseFloat(num.toFixed(3)).toString();
+  
   while (i < tokens.length) {
     const token = tokens[i];
     if (/[a-df-z]/i.test(token)) { cmd = token; i++; }
     const isRel = cmd === cmd.toLowerCase();
     const upperCmd = cmd.toUpperCase();
+    
     switch (upperCmd) {
       case 'M': {
         let x = parseFloat(tokens[i++]), y = parseFloat(tokens[i++]);
@@ -86,6 +88,30 @@ const transformPath = (d: string, matrix: Matrix): string => {
         let x = parseFloat(tokens[i++]), y = parseFloat(tokens[i++]);
         if (isRel) { x += curX; y += curY; }
         const p = matrix.apply(x, y); result += `L${fmt(p.x)},${fmt(p.y)} `;
+        curX = x; curY = y;
+        break;
+      }
+      case 'H': {
+        let x = parseFloat(tokens[i++]);
+        if (isRel) { x += curX; }
+        const p = matrix.apply(x, curY); result += `L${fmt(p.x)},${fmt(p.y)} `;
+        curX = x;
+        break;
+      }
+      case 'V': {
+        let y = parseFloat(tokens[i++]);
+        if (isRel) { y += curY; }
+        const p = matrix.apply(curX, y); result += `L${fmt(p.x)},${fmt(p.y)} `;
+        curY = y;
+        break;
+      }
+      case 'C': {
+        let x1 = parseFloat(tokens[i++]), y1 = parseFloat(tokens[i++]), 
+            x2 = parseFloat(tokens[i++]), y2 = parseFloat(tokens[i++]), 
+            x = parseFloat(tokens[i++]), y = parseFloat(tokens[i++]);
+        if (isRel) { x1 += curX; y1 += curY; x2 += curX; y2 += curY; x += curX; y += curY; }
+        const p1 = matrix.apply(x1, y1), p2 = matrix.apply(x2, y2), p = matrix.apply(x, y);
+        result += `C${fmt(p1.x)},${fmt(p1.y)} ${fmt(p2.x)},${fmt(p2.y)} ${fmt(p.x)},${fmt(p.y)} `;
         curX = x; curY = y;
         break;
       }
@@ -110,29 +136,57 @@ export const svgToAndroidXml = (svgString: string): string => {
   const doc = parser.parseFromString(svgString, 'image/svg+xml');
   const svg = doc.querySelector('svg');
   if (!svg) throw new Error('Invalid SVG');
+  
   const viewBoxStr = svg.getAttribute('viewBox') || `0 0 ${svg.getAttribute('width') || 24} ${svg.getAttribute('height') || 24}`;
   const viewBox = viewBoxStr.split(/[ ,]+/).map(Number);
-  const vbW = viewBox[2] || 24; const vbH = viewBox[3] || 24;
+  const vbW = viewBox[2] || 24; 
+  const vbH = viewBox[3] || 24;
   const globalMatrix = new Matrix(1, 0, 0, 1, -(viewBox[0] || 0), -(viewBox[1] || 0));
+
   let xml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"\n    android:width="${svg.getAttribute('width')?.replace('px', '') || vbW}dp"\n    android:height="${svg.getAttribute('height')?.replace('px', '') || vbH}dp"\n    android:viewportWidth="${vbW}"\n    android:viewportHeight="${vbH}">\n`;
+
   const processNode = (el: Element, currentMatrix: Matrix): string => {
-    if (el.getAttribute('opacity') === '0') return '';
+    if (el.getAttribute('opacity') === '0' || el.getAttribute('display') === 'none') return '';
     const tag = el.tagName.toLowerCase();
     const nodeMatrix = currentMatrix.multiply(parseSvgTransform(el.getAttribute('transform')));
-    if (tag === 'g') return Array.from(el.children).map(child => processNode(child, nodeMatrix)).join('');
+    
+    if (tag === 'g') {
+      return Array.from(el.children).map(child => processNode(child, nodeMatrix)).join('');
+    }
+
     let d = '';
     if (tag === 'path') d = el.getAttribute('d') || '';
     else if (tag === 'rect') {
       const x = parseFloat(el.getAttribute('x') || '0'), y = parseFloat(el.getAttribute('y') || '0'), w = parseFloat(el.getAttribute('width') || '0'), h = parseFloat(el.getAttribute('height') || '0');
       d = `M${x},${y}h${w}v${h}h${-w}z`;
+    } else if (tag === 'circle') {
+      const cx = parseFloat(el.getAttribute('cx') || '0'), cy = parseFloat(el.getAttribute('cy') || '0'), r = parseFloat(el.getAttribute('r') || '0');
+      d = `M${cx - r},${cy} a${r},${r} 0 1,0 ${r * 2},0 a${r},${r} 0 1,0 ${-r * 2},0`;
     }
+
     if (d) {
       const flattenedData = transformPath(d, nodeMatrix);
-      return `  <path\n      android:pathData="${flattenedData}"\n      android:fillColor="${el.getAttribute('fill') || '#000000'}"/>\n`;
+      const fill = el.getAttribute('fill') || '#000000';
+      const stroke = el.getAttribute('stroke');
+      const strokeWidth = el.getAttribute('stroke-width');
+      
+      let pathXml = `  <path\n      android:pathData="${flattenedData}"\n      android:fillColor="${fill === 'none' ? '#00000000' : fill}"`;
+      if (stroke && stroke !== 'none') {
+        pathXml += `\n      android:strokeColor="${stroke}"`;
+        if (strokeWidth) pathXml += `\n      android:strokeWidth="${strokeWidth}"`;
+      }
+      pathXml += `/>\n`;
+      return pathXml;
     }
     return '';
   };
-  Array.from(svg.children).forEach(child => { if (!['defs', 'style'].includes(child.tagName.toLowerCase())) xml += processNode(child, globalMatrix); });
+
+  Array.from(svg.children).forEach(child => { 
+    if (!['defs', 'style', 'metadata'].includes(child.tagName.toLowerCase())) {
+      xml += processNode(child, globalMatrix); 
+    }
+  });
+
   return xml + '</vector>';
 };
 
@@ -211,7 +265,7 @@ class SvgToAndroidConverter {
     }
 
     private fun processNode(node: SvgNode, currentMatrix: Matrix, result: StringBuilder) {
-        if (node.getAttribute("opacity") == "0") return
+        if (node.getAttribute("opacity") == "0" || node.getAttribute("display") == "none") return
         val tag = node.tagName.lowercase()
         val nodeMatrix = currentMatrix.multiply(parseTransform(node.getAttribute("transform")))
 
@@ -237,7 +291,15 @@ class SvgToAndroidConverter {
     private fun appendPath(d: String, node: SvgNode, matrix: Matrix, result: StringBuilder) {
         val flattened = flattenPath(d, matrix)
         val fill = node.getAttribute("fill") ?: "#000000"
-        result.append("  <path android:pathData=\\"\${flattened}\\" android:fillColor=\\"\${fill}\\"/>\\n")
+        val stroke = node.getAttribute("stroke")
+        val strokeWidth = node.getAttribute("stroke-width")
+        
+        result.append("  <path android:pathData=\\"\${flattened}\\" android:fillColor=\\"\${if (fill == "none") "#00000000" else fill}\\"")
+        if (stroke != null && stroke != "none") {
+            result.append(" android:strokeColor=\\"\${stroke}\\"")
+            if (strokeWidth != null) result.append(" android:strokeWidth=\\"\${strokeWidth}\\"")
+        }
+        result.append("/>\\n")
     }
 
     private fun parseTransform(transformStr: String?): Matrix {
@@ -308,10 +370,9 @@ class SvgToAndroidConverter {
                 "Z" -> { 
                     res.append("Z ")
                     curX = startX; curY = startY
-                    // Ensure we don't loop if there are unexpected parameters after Z
                     if (i < tokens.size && !tokens[i][0].isLetter()) i++
                 }
-                else -> { i++ } // CRITICAL: Skip unhandled tokens to prevent infinite loop
+                else -> { i++ }
             }
         }
         return res.toString().trim()
