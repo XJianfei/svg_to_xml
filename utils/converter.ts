@@ -52,7 +52,7 @@ interface GradientData {
   stops: GradientStop[];
   x1?: string; y1?: string; x2?: string; y2?: string;
   cx?: string; cy?: string; r?: string;
-  units?: 'objectBoundingBox' | 'userSpaceOnUse'; // Optional during parse
+  units?: 'objectBoundingBox' | 'userSpaceOnUse'; 
   href?: string;
 }
 
@@ -108,6 +108,10 @@ const transformPath = (d: string, matrix: Matrix): { pathData: string, bbox: { m
   let result = ''; let i = 0; let curX = 0, curY = 0; let startX = 0, startY = 0; let cmd = '';
   const fmt = (num: number) => parseFloat(num.toFixed(3)).toString();
   
+  // State for Smooth Cubic Bezier (S)
+  let prevCx = 0, prevCy = 0;
+  let prevCmdWasCubic = false;
+
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   const updateBBox = (x: number, y: number) => {
     const p = matrix.apply(x, y);
@@ -127,7 +131,9 @@ const transformPath = (d: string, matrix: Matrix): { pathData: string, bbox: { m
         let x = parseFloat(tokens[i++]), y = parseFloat(tokens[i++]);
         if (isRel) { x += curX; y += curY; }
         const p = matrix.apply(x, y); result += `M${fmt(p.x)},${fmt(p.y)}`;
-        updateBBox(x, y); curX = x; curY = y; startX = x; startY = y; cmd = isRel ? 'l' : 'L';
+        updateBBox(x, y); curX = x; curY = y; startX = x; startY = y; 
+        cmd = isRel ? 'l' : 'L';
+        prevCmdWasCubic = false;
         break;
       }
       case 'L': {
@@ -136,6 +142,7 @@ const transformPath = (d: string, matrix: Matrix): { pathData: string, bbox: { m
         if (isRel) { x += curX; y += curY; }
         const p = matrix.apply(x, y); result += `L${fmt(p.x)},${fmt(p.y)}`;
         updateBBox(x, y); curX = x; curY = y;
+        prevCmdWasCubic = false;
         break;
       }
       case 'H': {
@@ -144,6 +151,7 @@ const transformPath = (d: string, matrix: Matrix): { pathData: string, bbox: { m
         if (isRel) { x += curX; }
         const p = matrix.apply(x, curY); result += `L${fmt(p.x)},${fmt(p.y)}`;
         updateBBox(x, curY); curX = x;
+        prevCmdWasCubic = false;
         break;
       }
       case 'V': {
@@ -152,6 +160,7 @@ const transformPath = (d: string, matrix: Matrix): { pathData: string, bbox: { m
         if (isRel) { y += curY; }
         const p = matrix.apply(curX, y); result += `L${fmt(p.x)},${fmt(p.y)}`;
         updateBBox(curX, y); curY = y;
+        prevCmdWasCubic = false;
         break;
       }
       case 'C': {
@@ -164,6 +173,30 @@ const transformPath = (d: string, matrix: Matrix): { pathData: string, bbox: { m
         result += `C${fmt(p1.x)},${fmt(p1.y)} ${fmt(p2.x)},${fmt(p2.y)} ${fmt(p.x)},${fmt(p.y)}`;
         updateBBox(x1, y1); updateBBox(x2, y2); updateBBox(x, y);
         curX = x; curY = y;
+        prevCx = x2; prevCy = y2;
+        prevCmdWasCubic = true;
+        break;
+      }
+      case 'S': {
+        if (i + 3 >= tokens.length) { i = tokens.length; break; }
+        let x2 = parseFloat(tokens[i++]), y2 = parseFloat(tokens[i++]), 
+            x = parseFloat(tokens[i++]), y = parseFloat(tokens[i++]);
+        if (isRel) { x2 += curX; y2 += curY; x += curX; y += curY; }
+        
+        // Calculate reflection
+        let x1 = curX, y1 = curY;
+        if (prevCmdWasCubic) {
+            x1 = 2 * curX - prevCx;
+            y1 = 2 * curY - prevCy;
+        }
+
+        const p1 = matrix.apply(x1, y1), p2 = matrix.apply(x2, y2), p = matrix.apply(x, y);
+        result += `C${fmt(p1.x)},${fmt(p1.y)} ${fmt(p2.x)},${fmt(p2.y)} ${fmt(p.x)},${fmt(p.y)}`;
+        updateBBox(x1, y1); updateBBox(x2, y2); updateBBox(x, y);
+        
+        curX = x; curY = y;
+        prevCx = x2; prevCy = y2;
+        prevCmdWasCubic = true;
         break;
       }
       case 'Q': {
@@ -175,6 +208,7 @@ const transformPath = (d: string, matrix: Matrix): { pathData: string, bbox: { m
         result += `Q${fmt(p1.x)},${fmt(p1.y)} ${fmt(p.x)},${fmt(p.y)}`;
         updateBBox(x1, y1); updateBBox(x, y);
         curX = x; curY = y;
+        prevCmdWasCubic = false;
         break;
       }
       case 'A': {
@@ -185,10 +219,16 @@ const transformPath = (d: string, matrix: Matrix): { pathData: string, bbox: { m
         const newSwf = (matrix.a * matrix.d - matrix.b * matrix.c) < 0 ? (swf === '1' ? '0' : '1') : swf;
         result += `A${fmt(arc.rx)},${fmt(arc.ry)} ${fmt(arc.rotation)} ${laf},${newSwf} ${fmt(p.x)},${fmt(p.y)}`;
         updateBBox(x, y); curX = x; curY = y;
+        prevCmdWasCubic = false;
         break;
       }
-      case 'Z': result += 'Z'; curX = startX; curY = startY; break;
-      default: i++;
+      case 'Z': 
+        result += 'Z'; curX = startX; curY = startY; 
+        prevCmdWasCubic = false;
+        break;
+      default: 
+        i++; 
+        prevCmdWasCubic = false;
     }
   }
   return { pathData: result.trim(), bbox: { minX, minY, maxX, maxY } };
@@ -365,11 +405,6 @@ export const svgToAndroidXml = (svgString: string): string => {
             return num + (size === 0 ? 0 : 0); // UserSpace is absolute, relative to 0,0 usually but we handle global offset separately
           };
 
-          // Apply global transform offset if userSpaceOnUse (because parseCoord returns value relative to viewport 0,0)
-          // But our path data is transformed by globalMatrix.
-          // If gradient is userSpaceOnUse, its coordinates are absolute in SVG user space.
-          // Our globalMatrix transforms SVG user space to Android viewport space (shifts by -vbX, -vbY).
-          // So we must shift the gradient coordinates by the same amount.
           const applyGlobal = (val: number, isX: boolean) => val + (isX ? globalMatrix.e : globalMatrix.f);
 
           if (grad.type === 'linear') {
@@ -675,22 +710,41 @@ class SvgToAndroidConverter {
     private fun flattenPath(d: String, matrix: Matrix): Pair<String, BBox> {
         val tokens = tokenRegex.findAll(d).map { it.value }.toList(); var i = 0; var curX = 0.0; var curY = 0.0; var startX = 0.0; var startY = 0.0
         var cmd = ""; val res = StringBuilder(); var minX = Double.MAX_VALUE; var minY = Double.MAX_VALUE; var maxX = -Double.MAX_VALUE; var maxY = -Double.MAX_VALUE
+        
+        var prevCx = 0.0; var prevCy = 0.0; var prevCmdWasCubic = false
+
         fun update(x: Double, y: Double) { val p = matrix.apply(x, y); minX = min(minX, p.first); minY = min(minY, p.second); maxX = max(maxX, p.first); maxY = max(maxY, p.second) }
         while (i < tokens.size) {
             val token = tokens[i]; if (token[0].isLetter()) { cmd = token; i++ }; val isRel = cmd[0].isLowerCase()
             when (cmd.uppercase()) {
-                "M" -> { if (i + 1 >= tokens.size) break; var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble(); if (isRel) { x += curX; y += curY }; val p = matrix.apply(x, y); res.append("M\${fmt(p.first)},\${fmt(p.second)} "); curX = x; curY = y; startX = x; startY = y; update(x, y); cmd = if (isRel) "l" else "L" }
-                "L" -> { if (i + 1 >= tokens.size) break; var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble(); if (isRel) { x += curX; y += curY }; val p = matrix.apply(x, y); res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curX = x; curY = y; update(x, y) }
-                "H" -> { if (i >= tokens.size) break; var x = tokens[i++].toDouble(); if (isRel) x += curX; val p = matrix.apply(x, curY); res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curX = x; update(x, curY) }
-                "V" -> { if (i >= tokens.size) break; var y = tokens[i++].toDouble(); if (isRel) y += curY; val p = matrix.apply(curX, y); res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curY = y; update(curX, y) }
-                "Q" -> { if (i + 3 >= tokens.size) break; var x1 = tokens[i++].toDouble(); var y1 = tokens[i++].toDouble(); var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble(); if (isRel) { x1 += curX; y1 += curY; x += curX; y += curY }; val p1 = matrix.apply(x1, y1); val p = matrix.apply(x, y); res.append("Q\${fmt(p1.first)},\${fmt(p1.second)} \${fmt(p.first)},\${fmt(p.second)} "); curX = x; curY = y; update(x1, y1); update(x, y) }
+                "M" -> { if (i + 1 >= tokens.size) break; var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble(); if (isRel) { x += curX; y += curY }; val p = matrix.apply(x, y); res.append("M\${fmt(p.first)},\${fmt(p.second)} "); curX = x; curY = y; startX = x; startY = y; update(x, y); cmd = if (isRel) "l" else "L"; prevCmdWasCubic = false }
+                "L" -> { if (i + 1 >= tokens.size) break; var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble(); if (isRel) { x += curX; y += curY }; val p = matrix.apply(x, y); res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curX = x; curY = y; update(x, y); prevCmdWasCubic = false }
+                "H" -> { if (i >= tokens.size) break; var x = tokens[i++].toDouble(); if (isRel) x += curX; val p = matrix.apply(x, curY); res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curX = x; update(x, curY); prevCmdWasCubic = false }
+                "V" -> { if (i >= tokens.size) break; var y = tokens[i++].toDouble(); if (isRel) y += curY; val p = matrix.apply(curX, y); res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curY = y; update(curX, y); prevCmdWasCubic = false }
+                "Q" -> { if (i + 3 >= tokens.size) break; var x1 = tokens[i++].toDouble(); var y1 = tokens[i++].toDouble(); var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble(); if (isRel) { x1 += curX; y1 += curY; x += curX; y += curY }; val p1 = matrix.apply(x1, y1); val p = matrix.apply(x, y); res.append("Q\${fmt(p1.first)},\${fmt(p1.second)} \${fmt(p.first)},\${fmt(p.second)} "); curX = x; curY = y; update(x1, y1); update(x, y); prevCmdWasCubic = false }
+                "C" -> { 
+                   if (i + 5 >= tokens.size) break; var x1 = tokens[i++].toDouble(); var y1 = tokens[i++].toDouble(); var x2 = tokens[i++].toDouble(); var y2 = tokens[i++].toDouble(); var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble()
+                   if (isRel) { x1 += curX; y1 += curY; x2 += curX; y2 += curY; x += curX; y += curY }
+                   val p1 = matrix.apply(x1, y1); val p2 = matrix.apply(x2, y2); val p = matrix.apply(x, y)
+                   res.append("C\${fmt(p1.first)},\${fmt(p1.second)} \${fmt(p2.first)},\${fmt(p2.second)} \${fmt(p.first)},\${fmt(p.second)} ")
+                   curX = x; curY = y; update(x1, y1); update(x2, y2); update(x, y); prevCx = x2; prevCy = y2; prevCmdWasCubic = true 
+                }
+                "S" -> {
+                   if (i + 3 >= tokens.size) break; var x2 = tokens[i++].toDouble(); var y2 = tokens[i++].toDouble(); var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble()
+                   if (isRel) { x2 += curX; y2 += curY; x += curX; y += curY }
+                   var x1 = curX; var y1 = curY
+                   if (prevCmdWasCubic) { x1 = 2 * curX - prevCx; y1 = 2 * curY - prevCy }
+                   val p1 = matrix.apply(x1, y1); val p2 = matrix.apply(x2, y2); val p = matrix.apply(x, y)
+                   res.append("C\${fmt(p1.first)},\${fmt(p1.second)} \${fmt(p2.first)},\${fmt(p2.second)} \${fmt(p.first)},\${fmt(p.second)} ")
+                   curX = x; curY = y; update(x1, y1); update(x2, y2); update(x, y); prevCx = x2; prevCy = y2; prevCmdWasCubic = true 
+                }
                 "A" -> { 
                     if (i + 6 >= tokens.size) break; val rx = tokens[i++].toDouble(); val ry = tokens[i++].toDouble(); val rot = tokens[i++].toDouble(); val laf = tokens[i++]; val swf = tokens[i++]
                     var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble(); if (isRel) { x += curX; y += curY }; val p = matrix.apply(x, y); val arc = matrix.applyToArc(rx, ry, rot)
                     val nswf = if ((matrix.a * matrix.d - matrix.b * matrix.c) < 0) (if (swf == "1") "0" else "1") else swf
-                    res.append("A\${fmt(arc.first)},\${fmt(arc.second)} \${fmt(arc.third)} \$laf,\$nswf \${fmt(p.first)},\${fmt(p.second)} "); curX = x; curY = y; update(x, y)
+                    res.append("A\${fmt(arc.first)},\${fmt(arc.second)} \${fmt(arc.third)} \$laf,\$nswf \${fmt(p.first)},\${fmt(p.second)} "); curX = x; curY = y; update(x, y); prevCmdWasCubic = false
                 }
-                "Z" -> { res.append("Z "); curX = startX; curY = startY }
+                "Z" -> { res.append("Z "); curX = startX; curY = startY; prevCmdWasCubic = false }
                 else -> i++
             }
         }
