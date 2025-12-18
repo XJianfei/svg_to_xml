@@ -27,11 +27,73 @@ const Checkerboard = ({ children, className = "" }: { children: React.ReactNode,
   </div>
 );
 
-const DEFAULT_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="95.837" height="30.159" viewBox="0 0 95.837 30.159">
-  <g id="erase_horizon" transform="translate(95.837 0) rotate(90)">
-    <path id="path1" d="M0,25.849V13.1A13.1,13.1,0,0,1,13.1,0h0A13.1,13.1,0,0,1,26.2,13.1V25.849a13.1,13.1,0,0,1-13.1,13.1h0A13.1,13.1,0,0,1,0,25.849Z" transform="translate(1.961 3.128)" fill="#f69c9b"/>
-    <path id="path2" d="M0,68.416V1.175A1.175,1.175,0,0,1,1.175,0h26.2a1.178,1.178,0,0,1,1.175,1.175v67.25A1.176,1.176,0,0,1,27.373,69.6H1.175A1.175,1.175,0,0,1,0,68.425ZM2.35,2.337v64.9H26.186V2.337Z" transform="translate(0.799 25.149)" fill="#333"/>
-  </g>
+const DEFAULT_SVG = `<svg id="图层_2" data-name="图层 2" xmlns="http://www.w3.org/2000/svg"
+xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 324 324">
+<defs>
+<style>
+.cls-1{fill:#fff;}.cls-2{fill:url(#未命名的渐变_27);}.cls-3{fill:url(#未命名的渐变_27-2);}.cls-4{fill:url(#未命名的渐变_30);}.cls-5{fill:url(#未命名的渐变_28);}.cls-6{fill:url(#未命名的渐变_23);}.cls-7{fill:url(#未命名的渐变_55);}.cls-8{fill:url(#未命名的渐变_25);}.cls-9{fill:url(#未命名的渐变_26);}.cls-10{fill-opacity:0.82;fill:url(#未命名的渐变_424);}
+</style>
+<linearGradient id="未命名的渐变_27" x1="158.47" y1="160.07" x2="160.92" y2="160.07"
+gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#fbe14f" />
+<stop offset="1" stop-color="#fb6e48" />
+</linearGradient>
+<linearGradient id="未命名的渐变_27-2" x1="161.03" y1="160.04" x2="163.49" y2="160.04"
+xlink:href="#未命名的渐变_27" />
+<linearGradient id="未命名的渐变_30" x1="190.75" y1="217.32" x2="253.14" y2="217.32"
+gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#ff3c00" />
+<stop offset="0.45" stop-color="#ff763b" />
+<stop offset="1" stop-color="#feb87e" />
+</linearGradient>
+<linearGradient id="未命名的渐变_28" x1="70.77" y1="245.36" x2="253.14" y2="245.36"
+gradientUnits="userSpaceOnUse">
+<stop offset="0.33" stop-color="#ff3c00" />
+<stop offset="0.63" stop-color="#ff763b" />
+<stop offset="1" stop-color="#feb87e" />
+</linearGradient>
+<linearGradient id="未命名的渐变_23" x1="190.48" y1="132.35" x2="221.05" y2="106.85"
+gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#ff3c00" />
+<stop offset="0.39" stop-color="#ff7131" stop-opacity="0.96" />
+<stop offset="1" stop-color="#ffbf7a" stop-opacity="0.9" />
+</linearGradient>
+<linearGradient id="未命名的渐变_55" x1="149.17" y1="132.83" x2="186.76" y2="82.71"
+xlink:href="#未命名的渐变_23" />
+<linearGradient id="未命名的渐变_25" x1="177.73" y1="165.4" x2="234.34" y2="144.81"
+xlink:href="#未命名的渐变_23" />
+<linearGradient id="未命名的渐变_26" x1="115.97" y1="179.79" x2="196.52" y2="119.52"
+gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#ff3c00" />
+<stop offset="1" stop-color="#ffbf7a" stop-opacity="0.9" />
+</linearGradient>
+<linearGradient id="未命名的渐变_424" x1="113.96" y1="222.58" x2="114.08" y2="192.92"
+gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#f2966f" />
+<stop offset="0.19" stop-color="#fff5db" />
+<stop offset="0.43" stop-color="#ffbd81" />
+<stop offset="0.92" stop-color="#f8ddc4" />
+<stop offset="0.94" stop-color="#f8dec7" />
+</linearGradient>
+</defs>
+<rect class="cls-1" x="0.21" y="0.23" width="323.77" height="323.77" rx="68.48" />
+<path class="cls-2"
+d="M158.47,160a8.42,8.42,0,0,0,1.52.14h.93a8.45,8.45,0,0,0-1.75-.18C158.93,160,158.7,160,158.47,160Z" />
+<path class="cls-3" d="M161,160a8.62,8.62,0,0,0,1.53.14h.93a9.29,9.29,0,0,0-1.76-.17Z" />
+<path class="cls-4"
+d="M200.35,210.3h43.19q9.6,0,9.6,7h0q0,7-9.6,7H200.35q-9.6,0-9.6-7h0Q190.75,210.3,200.35,210.3Z" />
+<path class="cls-5"
+d="M80.37,238.35H243.54q9.6,0,9.6,7h0q0,7-9.6,7H80.37q-9.6,0-9.6-7h0Q70.77,238.36,80.37,238.35Z" />
+<path class="cls-6"
+d="M213.49,87.28c-3.85,9.44-6.31,15.48-8.24,24.3-.52,2.38-.93,4.64-1.26,6.82,2.26.35,4.78.68,7.51.92a100.33,100.33,0,0,0,23.82-.29c3.31-.45,6.2-1,8.57-1.57A27,27,0,0,0,241,113L216,81.4C215.21,83.15,214.38,85.09,213.49,87.28Z" />
+<path class="cls-7"
+d="M153.87,94.79a67,67,0,0,0,17.19,12.86A89.49,89.49,0,0,0,193,116.14a99.16,99.16,0,0,1,7.49-21.67,162.82,162.82,0,0,1,10.81-18.4c.07-.1.15-.2.22-.31a28.13,28.13,0,0,0-38.2-3.64l-23.41,18C151,91.61,152.33,93.17,153.87,94.79Z" />
+<path class="cls-8"
+d="M231.63,132.81A101.82,101.82,0,0,1,202.78,138c0,1,0,2.05.05,3,.19,9.62.39,16.71,3.81,25.34a53.56,53.56,0,0,0,2.76,5.92l26.79-20.66.39-.3a27.24,27.24,0,0,0,10.09-24.88A101.91,101.91,0,0,1,231.63,132.81Z" />
+<path class="cls-9"
+d="M190.08,137.86a131.57,131.57,0,0,1-34.9-6A116.15,116.15,0,0,1,128,119.18c-3.1-2-5.8-4-8.12-5.86L93.06,134a27.44,27.44,0,0,0-9.9,15.06L71.31,196.33a17.67,17.67,0,0,0-.54,4.34A18.29,18.29,0,0,0,80.85,217l.88.43a18.78,18.78,0,0,0,7.55,1.62l49.44.17a28.14,28.14,0,0,0,6-.64c.47-.1.94-.22,1.4-.34a28,28,0,0,0,9.85-4.85l39-30.08A136.11,136.11,0,0,1,190.08,137.86Z" />
+<path class="cls-10"
+d="M130,206.48c-3.78-3.67-8.62-7-15.68-7s-12.78,5.48-15.43,7.72c-6.94,5.86-8.32,9.17-14.12,11.34a18.82,18.82,0,0,0,4.54.58l49.44.17a26.93,26.93,0,0,0,4.49-.36C138.76,216.29,135.77,212.12,130,206.48Z" />
 </svg>`;
 
 const VectorXmlPreview = ({ xml }: { xml: string }) => {
@@ -57,6 +119,7 @@ const VectorXmlPreview = ({ xml }: { xml: string }) => {
         let fill = p.getAttribute('android:fillColor') || '#000000';
         const stroke = p.getAttribute('android:strokeColor');
         const strokeWidth = p.getAttribute('android:strokeWidth');
+        const fillAlpha = p.getAttribute('android:fillAlpha');
 
         // Handle aapt gradients
         const aaptAttr = p.getElementsByTagName('aapt:attr')[0];
@@ -102,6 +165,7 @@ const VectorXmlPreview = ({ xml }: { xml: string }) => {
             fill={fill} 
             stroke={stroke || 'none'} 
             strokeWidth={strokeWidth || '0'} 
+            fillOpacity={fillAlpha || '1'}
           />
         );
       });
