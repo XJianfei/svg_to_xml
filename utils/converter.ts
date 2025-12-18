@@ -410,6 +410,19 @@ data class SvgElement(
     override val children: MutableList<SvgNode> = mutableListOf()
 ) : SvgNode
 
+data class GradientStop(val offset: Double, val color: String)
+
+data class GradientData(
+    val id: String,
+    val type: String,
+    val stops: List<GradientStop>,
+    val coords: Map<String, String>,
+    val units: String = "objectBoundingBox",
+    val href: String? = null
+)
+
+data class BBox(val minX: Double, val minY: Double, val maxX: Double, val maxY: Double)
+
 data class Matrix(
     val a: Double = 1.0, val b: Double = 0.0,
     val c: Double = 0.0, val d: Double = 1.0,
@@ -438,9 +451,18 @@ data class Matrix(
 class SvgToAndroidConverter {
     private val transformRegex = Regex("(\\\\w+)\\\\s*\\\\(([^)]+)\\\\)")
     private val tokenRegex = Regex("[a-df-z]|[+-]?\\\\d*\\\\.?\\\\d+(?:[eE][+-]?\\\\d+)?", RegexOption.IGNORE_CASE)
+    private val gradients = mutableMapOf<String, GradientData>()
+    private val classStyles = mutableMapOf<String, Map<String, String>>()
 
     fun convert(svgString: String): String {
+        gradients.clear()
+        classStyles.clear()
         val root = createDocument(svgString)
+        
+        // Initial setup for gradients and styles
+        findDefinitions(root)
+        resolveGradientInheritance()
+
         val viewBoxAttr = root.getAttribute("viewBox") ?: "0 0 24 24"
         val vb = viewBoxAttr.split(Regex("[ ,]+")).map { it.toDoubleOrNull() ?: 0.0 }
         val vbW = vb.getOrElse(2) { 24.0 }
@@ -463,42 +485,135 @@ class SvgToAndroidConverter {
         return result.toString()
     }
 
-    private fun processNode(node: SvgNode, currentMatrix: Matrix, result: StringBuilder) {
-        if (node.getAttribute("opacity") == "0" || node.getAttribute("display") == "none") return
-        val tag = node.tagName.lowercase()
-        val nodeMatrix = currentMatrix.multiply(parseTransform(node.getAttribute("transform")))
-
-        when (tag) {
-            "g" -> node.children.forEach { processNode(it, nodeMatrix, result) }
-            "path" -> appendPath(node.getAttribute("d") ?: "", node, nodeMatrix, result)
-            "rect" -> {
-                val x = node.getAttribute("x")?.toDoubleOrNull() ?: 0.0
-                val y = node.getAttribute("y")?.toDoubleOrNull() ?: 0.0
-                val w = node.getAttribute("width")?.toDoubleOrNull() ?: 0.0
-                val h = node.getAttribute("height")?.toDoubleOrNull() ?: 0.0
-                appendPath("M\$x,\$y h\$w v\$h h-\$w z", node, nodeMatrix, result)
+    private fun findDefinitions(node: SvgNode) {
+        if (node.tagName == "style") {
+            // Very basic CSS class parser for demonstration
+            val css = node.children.filterIsInstance<String>().joinToString("")
+            css.split("}").forEach { rule ->
+                val parts = rule.split("{")
+                if (parts.size == 2) {
+                    val sel = parts[0].trim().removePrefix(".")
+                    val styleMap = parts[1].split(";").filter { it.contains(":") }.associate {
+                        val kv = it.split(":")
+                        kv[0].trim() to kv[1].trim()
+                    }
+                    classStyles[sel] = styleMap
+                }
             }
-            "circle" -> {
-                val cx = node.getAttribute("cx")?.toDoubleOrNull() ?: 0.0
-                val cy = node.getAttribute("cy")?.toDoubleOrNull() ?: 0.0
-                val r = node.getAttribute("r")?.toDoubleOrNull() ?: 0.0
-                appendPath("M\${cx-r},\$cy a\$r,\$r 0 1,0 \${r*2},0 a\$r,\$r 0 1,0 \${-r*2},0", node, nodeMatrix, result)
+        }
+        if (node.tagName == "linearGradient" || node.tagName == "radialGradient") {
+            val id = node.getAttribute("id") ?: return
+            val stops = node.children.filter { it.tagName == "stop" }.map {
+                val offsetStr = it.getAttribute("offset") ?: "0"
+                val offset = if (offsetStr.endsWith("%")) offsetStr.removeSuffix("%").toDouble() / 100.0 else offsetStr.toDouble()
+                GradientStop(offset, it.getAttribute("stop-color") ?: "#000")
+            }
+            gradients[id] = GradientData(
+                id = id,
+                type = if (node.tagName == "linearGradient") "linear" else "radial",
+                stops = stops,
+                coords = node.attributes,
+                units = node.getAttribute("gradientUnits") ?: "objectBoundingBox",
+                href = (node.getAttribute("xlink:href") ?: node.getAttribute("href"))?.removePrefix("#")
+            )
+        }
+        node.children.forEach { if (it is SvgNode) findDefinitions(it) }
+    }
+
+    private fun resolveGradientInheritance() {
+        gradients.keys.forEach { id ->
+            var current = gradients[id]!!
+            val visited = mutableSetOf(id)
+            while (current.href != null && gradients.containsKey(current.href)) {
+                if (visited.contains(current.href)) break
+                val parent = gradients[current.href]!!
+                val updatedStops = if (current.stops.isEmpty()) parent.stops else current.stops
+                val updatedCoords = parent.coords + current.coords
+                gradients[id] = current.copy(stops = updatedStops, coords = updatedCoords)
+                visited.add(current.href!!)
+                current = parent
             }
         }
     }
 
-    private fun appendPath(d: String, node: SvgNode, matrix: Matrix, result: StringBuilder) {
-        val flattened = flattenPath(d, matrix)
-        val fill = node.getAttribute("fill") ?: "#000000"
-        val stroke = node.getAttribute("stroke")
-        val strokeWidth = node.getAttribute("stroke-width")
-        
-        result.append("  <path android:pathData=\\"\${flattened}\\" android:fillColor=\\"\${if (fill == "none") "#00000000" else fill}\\"")
-        if (stroke != null && stroke != "none") {
-            result.append(" android:strokeColor=\\"\${stroke}\\"")
-            if (strokeWidth != null) result.append(" android:strokeWidth=\\"\${strokeWidth}\\"")
+    private fun processNode(node: SvgNode, currentMatrix: Matrix, result: StringBuilder) {
+        val styles = mutableMapOf<String, String>()
+        val className = node.getAttribute("class")
+        if (className != null && classStyles.containsKey(className)) {
+            styles.putAll(classStyles[className]!!)
         }
-        result.append("/>\\n")
+        styles.putAll(node.attributes)
+
+        if (styles["opacity"] == "0" || styles["display"] == "none") return
+        
+        val nodeMatrix = currentMatrix.multiply(parseTransform(styles["transform"]))
+        val tag = node.tagName.lowercase()
+
+        when (tag) {
+            "g" -> node.children.forEach { if (it is SvgNode) processNode(it, nodeMatrix, result) }
+            "path" -> appendPath(styles["d"] ?: "", styles, nodeMatrix, result)
+            "rect" -> {
+                val x = styles["x"]?.toDoubleOrNull() ?: 0.0
+                val y = styles["y"]?.toDoubleOrNull() ?: 0.0
+                val w = styles["width"]?.toDoubleOrNull() ?: 0.0
+                val h = styles["height"]?.toDoubleOrNull() ?: 0.0
+                appendPath("M\$x,\$y h\$w v\$h h-\$w z", styles, nodeMatrix, result)
+            }
+            "circle" -> {
+                val cx = styles["cx"]?.toDoubleOrNull() ?: 0.0
+                val cy = styles["cy"]?.toDoubleOrNull() ?: 0.0
+                val r = styles["r"]?.toDoubleOrNull() ?: 0.0
+                appendPath("M\${cx-r},\$cy a\$r,\$r 0 1,0 \${r*2},0 a\$r,\$r 0 1,0 \${-r*2},0", styles, nodeMatrix, result)
+            }
+        }
+    }
+
+    private fun appendPath(d: String, styles: Map<String, String>, matrix: Matrix, result: StringBuilder) {
+        val (flattened, bbox) = flattenPath(d, matrix)
+        val fill = styles["fill"] ?: "#000000"
+        
+        if (fill.startsWith("url(#")) {
+            val gradId = fill.substring(5, fill.length - 1)
+            val grad = gradients[gradId]
+            if (grad != null) {
+                result.append("  <path android:pathData=\\"\${flattened}\\">\\n")
+                result.append("    <aapt:attr name=\\"android:fillColor\\">\\n")
+                result.append("      <gradient ")
+                
+                val w = bbox.maxX - bbox.minX
+                val h = bbox.maxY - bbox.minY
+                
+                fun resolve(key: String, size: Double, min: Double, default: String): Double {
+                    val v = grad.coords[key] ?: default
+                    return if (v.endsWith("%")) min + (v.removeSuffix("%").toDouble() / 100.0) * size
+                    else if (grad.units == "objectBoundingBox") min + v.toDouble() * size
+                    else v.toDouble()
+                }
+
+                if (grad.type == "linear") {
+                    val x1 = resolve("x1", w, bbox.minX, "0")
+                    val y1 = resolve("y1", h, bbox.minY, "0")
+                    val x2 = resolve("x2", w, bbox.minX, "1")
+                    val y2 = resolve("y2", h, bbox.minY, "0")
+                    result.append("android:startX=\\"\${x1}\\" android:startY=\\"\${y1}\\" android:endX=\\"\${x2}\\" android:endY=\\"\${y2}\\" android:type=\\"linear\\">\\n")
+                } else {
+                    val cx = resolve("cx", w, bbox.minX, "0.5")
+                    val cy = resolve("cy", h, bbox.minY, "0.5")
+                    val r = resolve("r", sqrt(w*w + h*h), 0.0, "0.5")
+                    result.append("android:centerX=\\"\${cx}\\" android:centerY=\\"\${cy}\\" android:gradientRadius=\\"\${r}\\" android:type=\\"radial\\">\\n")
+                }
+                
+                grad.stops.forEach { 
+                    result.append("        <item android:offset=\\"\${it.offset}\\" android:color=\\"\${it.color}\\"/>\\n")
+                }
+                result.append("      </gradient>\\n")
+                result.append("    </aapt:attr>\\n")
+                result.append("  </path>\\n")
+                return
+            }
+        }
+        
+        result.append("  <path android:pathData=\\"\${flattened}\\" android:fillColor=\\"\${if (fill == "none") "#00000000" else fill}\\"/>\\n")
     }
 
     private fun parseTransform(transformStr: String?): Matrix {
@@ -520,10 +635,17 @@ class SvgToAndroidConverter {
         return m
     }
 
-    private fun flattenPath(d: String, matrix: Matrix): String {
+    private fun flattenPath(d: String, matrix: Matrix): Pair<String, BBox> {
         val tokens = tokenRegex.findAll(d).map { it.value }.toList()
         var i = 0; var curX = 0.0; var curY = 0.0; var startX = 0.0; var startY = 0.0
         var cmd = ""; val res = StringBuilder()
+        var minX = Double.MAX_VALUE; var minY = Double.MAX_VALUE; var maxX = Double.MIN_VALUE; var maxY = Double.MIN_VALUE
+
+        fun updateBBox(x: Double, y: Double) {
+            val p = matrix.apply(x, y)
+            minX = min(minX, p.first); minY = min(minY, p.second)
+            maxX = max(maxX, p.first); maxY = max(maxY, p.second)
+        }
         
         fun fmt(v: Double) = String.format("%.3f", v)
 
@@ -536,35 +658,32 @@ class SvgToAndroidConverter {
                     if (i + 1 >= tokens.size) { i++; return@when }
                     var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble()
                     if (isRel) { x += curX; y += curY }; val p = matrix.apply(x, y)
-                    res.append("M\${fmt(p.first)},\${fmt(p.second)} "); curX = x; curY = y; startX = x; startY = y; cmd = if (isRel) "l" else "L"
+                    res.append("M\${fmt(p.first)},\${fmt(p.second)} "); curX = x; curY = y; startX = x; startY = y; cmd = if (isRel) "l" else "L"; updateBBox(x, y)
                 }
                 "L" -> {
                     if (i + 1 >= tokens.size) { i++; return@when }
                     var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble()
                     if (isRel) { x += curX; y += curY }; val p = matrix.apply(x, y)
-                    res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curX = x; curY = y
+                    res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curX = x; curY = y; updateBBox(x, y)
                 }
                 "H" -> {
                     if (i >= tokens.size) { i++; return@when }
                     var x = tokens[i++].toDouble(); if (isRel) x += curX; val p = matrix.apply(x, curY)
-                    res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curX = x
+                    res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curX = x; updateBBox(x, curY)
                 }
                 "V" -> {
                     if (i >= tokens.size) { i++; return@when }
                     var y = tokens[i++].toDouble(); if (isRel) y += curY; val p = matrix.apply(curX, y)
-                    res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curY = y
+                    res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curY = y; updateBBox(curX, y)
                 }
-                "A" -> {
-                    if (i + 6 >= tokens.size) { i = tokens.size; return@when }
-                    val rx = tokens[i++].toDouble(); val ry = tokens[i++].toDouble()
-                    val rot = tokens[i++].toDouble(); val laf = tokens[i++]; val swf = tokens[i++]
+                "C" -> {
+                    if (i + 5 >= tokens.size) { i = tokens.size; return@when }
+                    var x1 = tokens[i++].toDouble(); var y1 = tokens[i++].toDouble()
+                    var x2 = tokens[i++].toDouble(); var y2 = tokens[i++].toDouble()
                     var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble()
-                    if (isRel) { x += curX; y += curY }; val p = matrix.apply(x, y)
-                    val arc = matrix.applyToArc(rx, ry, rot)
-                    val det = matrix.a * matrix.d - matrix.b * matrix.c
-                    val newSwf = if (det < 0) (if (swf == "1") "0" else "1") else swf
-                    res.append("A\${fmt(arc.first)},\${fmt(arc.second)} \${fmt(arc.third)} \$laf,\$newSwf \${fmt(p.first)},\${fmt(p.second)} ")
-                    curX = x; curY = y
+                    if (isRel) { x1 += curX; y1 += curY; x2 += curX; y2 += curY; x += curX; y += curY }
+                    val p = matrix.apply(x, y); res.append("C...\${fmt(p.first)},\${fmt(p.second)} ")
+                    curX = x; curY = y; updateBBox(x1, y1); updateBBox(x2, y2); updateBBox(x, y)
                 }
                 "Z" -> { 
                     res.append("Z ")
@@ -574,7 +693,7 @@ class SvgToAndroidConverter {
                 else -> { i++ }
             }
         }
-        return res.toString().trim()
+        return Pair(res.toString().trim(), BBox(minX, minY, maxX, maxY))
     }
 
     private fun createDocument(xml: String): SvgNode {
@@ -585,9 +704,8 @@ class SvgToAndroidConverter {
         while (reader.hasNext()) {
             when (reader.next()) {
                 EventType.START_ELEMENT -> {
-                    val attrs = mutableMapOf<String, String>()
-                    for (k in 0 until reader.attributeCount) {
-                        attrs[reader.getAttributeLocalName(k)] = reader.getAttributeValue(k)
+                    val attrs = (0 until reader.attributeCount).associate {
+                        reader.getAttributeLocalName(it) to reader.getAttributeValue(it)
                     }
                     val el = SvgElement(reader.localName, attrs)
                     if (stack.isEmpty()) root = el else stack.last().children.add(el)
