@@ -143,7 +143,6 @@ import net.devrieze.xmlutil.EventType
 
 /**
  * KMP Compatible SVG to Android VectorDrawable XML Converter Logic.
- * This implementation includes a manual DOM-like structure builder using XmlReader.
  */
 
 interface SvgNode {
@@ -264,31 +263,60 @@ class SvgToAndroidConverter {
         val tokens = tokenRegex.findAll(d).map { it.value }.toList()
         var i = 0; var curX = 0.0; var curY = 0.0; var startX = 0.0; var startY = 0.0
         var cmd = ""; val res = StringBuilder()
+        
+        fun fmt(v: Double) = String.format("%.3f", v)
+
         while (i < tokens.size) {
             val token = tokens[i]
             if (token[0].isLetter()) { cmd = token; i++ }
             val isRel = cmd[0].isLowerCase()
             when (cmd.uppercase()) {
                 "M" -> {
+                    if (i + 1 >= tokens.size) { i++; return@when }
                     var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble()
                     if (isRel) { x += curX; y += curY }; val p = matrix.apply(x, y)
-                    res.append("M\${p.first},\${p.second} "); curX = x; curY = y; startX = x; startY = y; cmd = if (isRel) "l" else "L"
+                    res.append("M\${fmt(p.first)},\${fmt(p.second)} "); curX = x; curY = y; startX = x; startY = y; cmd = if (isRel) "l" else "L"
                 }
                 "L" -> {
+                    if (i + 1 >= tokens.size) { i++; return@when }
                     var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble()
                     if (isRel) { x += curX; y += curY }; val p = matrix.apply(x, y)
-                    res.append("L\${p.first},\${p.second} "); curX = x; curY = y
+                    res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curX = x; curY = y
                 }
-                "Z" -> { res.append("Z "); curX = startX; curY = startY }
+                "H" -> {
+                    if (i >= tokens.size) { i++; return@when }
+                    var x = tokens[i++].toDouble(); if (isRel) x += curX; val p = matrix.apply(x, curY)
+                    res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curX = x
+                }
+                "V" -> {
+                    if (i >= tokens.size) { i++; return@when }
+                    var y = tokens[i++].toDouble(); if (isRel) y += curY; val p = matrix.apply(curX, y)
+                    res.append("L\${fmt(p.first)},\${fmt(p.second)} "); curY = y
+                }
+                "A" -> {
+                    if (i + 6 >= tokens.size) { i = tokens.size; return@when }
+                    val rx = tokens[i++].toDouble(); val ry = tokens[i++].toDouble()
+                    val rot = tokens[i++].toDouble(); val laf = tokens[i++]; val swf = tokens[i++]
+                    var x = tokens[i++].toDouble(); var y = tokens[i++].toDouble()
+                    if (isRel) { x += curX; y += curY }; val p = matrix.apply(x, y)
+                    val arc = matrix.applyToArc(rx, ry, rot)
+                    val det = matrix.a * matrix.d - matrix.b * matrix.c
+                    val newSwf = if (det < 0) (if (swf == "1") "0" else "1") else swf
+                    res.append("A\${fmt(arc.first)},\${fmt(arc.second)} \${fmt(arc.third)} \$laf,\$newSwf \${fmt(p.first)},\${fmt(p.second)} ")
+                    curX = x; curY = y
+                }
+                "Z" -> { 
+                    res.append("Z ")
+                    curX = startX; curY = startY
+                    // Ensure we don't loop if there are unexpected parameters after Z
+                    if (i < tokens.size && !tokens[i][0].isLetter()) i++
+                }
+                else -> { i++ } // CRITICAL: Skip unhandled tokens to prevent infinite loop
             }
         }
         return res.toString().trim()
     }
 
-    /**
-     * Complete implementation of createDocument using XmlReader.
-     * Parses the XML stream into a simple tree structure.
-     */
     private fun createDocument(xml: String): SvgNode {
         val reader = XmlStreaming.newReader(xml)
         val stack = mutableListOf<SvgElement>()
@@ -298,24 +326,18 @@ class SvgToAndroidConverter {
             when (reader.next()) {
                 EventType.START_ELEMENT -> {
                     val attrs = mutableMapOf<String, String>()
-                    for (i in 0 until reader.attributeCount) {
-                        attrs[reader.getAttributeLocalName(i)] = reader.getAttributeValue(i)
+                    for (k in 0 until reader.attributeCount) {
+                        attrs[reader.getAttributeLocalName(k)] = reader.getAttributeValue(k)
                     }
                     val el = SvgElement(reader.localName, attrs)
-                    if (stack.isEmpty()) {
-                        root = el
-                    } else {
-                        stack.last().children.add(el)
-                    }
+                    if (stack.isEmpty()) root = el else stack.last().children.add(el)
                     stack.add(el)
                 }
-                EventType.END_ELEMENT -> {
-                    if (stack.isNotEmpty()) stack.removeAt(stack.size - 1)
-                }
+                EventType.END_ELEMENT -> if (stack.isNotEmpty()) stack.removeAt(stack.size - 1)
                 else -> {}
             }
         }
-        return root ?: throw IllegalArgumentException("Invalid XML")
+        return root ?: throw IllegalArgumentException("Invalid SVG XML")
     }
 }
 `;
