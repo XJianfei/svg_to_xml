@@ -99,7 +99,7 @@ const parseSvgTransform = (transformStr: string | null): Matrix => {
 
 const PATH_TOKEN_REGEX = /[+-]?[0-9]*\.?[0-9]+(?:[eE][+-]?[0-9]+)?|[a-zA-Z]/g;
 
-const transformPath = (d: string, matrix: Matrix): { pathData: string, bbox: { minX: number, minY: number, maxX: number, maxY: number } } => {
+const transformPath = (d: string, matrix: Matrix): { pathData: string, bbox: { minX: number, minY: number, maxX: number, maxY: number }, localBbox: { minX: number, minY: number, maxX: number, maxY: number } } => {
   const tokens = d.match(PATH_TOKEN_REGEX) || [];
   let result = ''; let i = 0; let curX = 0, curY = 0; let startX = 0, startY = 0; let cmd = '';
   const fmt = (num: number) => parseFloat(num.toFixed(3)).toString();
@@ -108,10 +108,14 @@ const transformPath = (d: string, matrix: Matrix): { pathData: string, bbox: { m
   let prevCmdWasCubic = false;
 
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let lMinX = Infinity, lMinY = Infinity, lMaxX = -Infinity, lMaxY = -Infinity;
+
   const updateBBox = (x: number, y: number) => {
     const p = matrix.apply(x, y);
     minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
     maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+    lMinX = Math.min(lMinX, x); lMinY = Math.min(lMinY, y);
+    lMaxX = Math.max(lMaxX, x); lMaxY = Math.max(lMaxY, y);
   };
 
   while (i < tokens.length) {
@@ -217,7 +221,11 @@ const transformPath = (d: string, matrix: Matrix): { pathData: string, bbox: { m
       default: i++; prevCmdWasCubic = false;
     }
   }
-  return { pathData: result.trim(), bbox: { minX, minY, maxX, maxY } };
+  return { 
+    pathData: result.trim(), 
+    bbox: { minX, minY, maxX, maxY }, 
+    localBbox: { minX: lMinX, minY: lMinY, maxX: lMaxX, maxY: lMaxY } 
+  };
 };
 
 export const svgToAndroidXml = (svgString: string): string => {
@@ -376,7 +384,7 @@ export const svgToAndroidXml = (svgString: string): string => {
     if (d) {
       const res = transformPath(d, nodeMatrix);
       if (!res.pathData) return '';
-      const { pathData, bbox } = res;
+      const { pathData, bbox, localBbox } = res;
       
       const fill = mergedStyles['fill'];
       const fillOpacity = mergedStyles['fill-opacity'] || opacity || '1';
@@ -396,25 +404,43 @@ export const svgToAndroidXml = (svgString: string): string => {
         if (grad) {
           if (fillOpacity !== '1') pathXml += `\n      android:fillAlpha="${fillOpacity}"`;
           pathXml += `>\n    <aapt:attr name="android:fillColor">\n      <gradient`;
+          
           const units = grad.units || 'objectBoundingBox';
-          const parseCoord = (val: string | undefined, size: number, min: number, def: string) => {
-            const v = val ?? def;
-            if (v.endsWith('%')) return min + (parseFloat(v) / 100) * size;
-            const num = parseFloat(v);
-            if (units === 'objectBoundingBox') return min + num * size;
-            return num;
+          const parseRaw = (val: string | undefined, def: string) => {
+             const v = val ?? def;
+             return v.endsWith('%') ? parseFloat(v) / 100 : parseFloat(v);
           };
-          const applyGlobal = (val: number, isX: boolean) => val + (isX ? globalMatrix.e : globalMatrix.f);
+
           if (grad.type === 'linear') {
-            const w = isFinite(bbox.maxX) ? bbox.maxX - bbox.minX : 0;
-            const h = isFinite(bbox.maxY) ? bbox.maxY - bbox.minY : 0;
-            let x1 = parseCoord(grad.x1, w, bbox.minX, '0'), y1 = parseCoord(grad.y1, h, bbox.minY, '0');
-            let x2 = parseCoord(grad.x2, w, bbox.minX, '1'), y2 = parseCoord(grad.y2, h, bbox.minY, '0');
-            if (units === 'userSpaceOnUse') { x1 = applyGlobal(x1, true); y1 = applyGlobal(y1, false); x2 = applyGlobal(x2, true); y2 = applyGlobal(y2, false); }
-            pathXml += ` \n          android:startX="${x1.toFixed(3)}"\n          android:startY="${y1.toFixed(3)}"\n          android:endX="${x2.toFixed(3)}"\n          android:endY="${y2.toFixed(3)}"\n          android:type="linear">`;
+             // Corrected: Use nodeMatrix to apply shape rotation to the gradient vector points.
+             // nodeMatrix already includes globalMatrix offset.
+             if (units === 'objectBoundingBox') {
+                const lw = localBbox.maxX - localBbox.minX;
+                const lh = localBbox.maxY - localBbox.minY;
+                const lx1 = localBbox.minX + parseRaw(grad.x1, '0') * lw;
+                const ly1 = localBbox.minY + parseRaw(grad.y1, '0') * lh;
+                const lx2 = localBbox.minX + parseRaw(grad.x2, '1') * lw;
+                const ly2 = localBbox.minY + parseRaw(grad.y2, '0') * lh;
+                
+                const p1 = nodeMatrix.apply(lx1, ly1);
+                const p2 = nodeMatrix.apply(lx2, ly2);
+                
+                pathXml += ` \n          android:startX="${p1.x.toFixed(3)}"\n          android:startY="${p1.y.toFixed(3)}"\n          android:endX="${p2.x.toFixed(3)}"\n          android:endY="${p2.y.toFixed(3)}"\n          android:type="linear">`;
+             } else {
+                const p1 = globalMatrix.apply(parseFloat(grad.x1 || '0'), parseFloat(grad.y1 || '0'));
+                const p2 = globalMatrix.apply(parseFloat(grad.x2 || '0'), parseFloat(grad.y2 || '0'));
+                pathXml += ` \n          android:startX="${p1.x.toFixed(3)}"\n          android:startY="${p1.y.toFixed(3)}"\n          android:endX="${p2.x.toFixed(3)}"\n          android:endY="${p2.y.toFixed(3)}"\n          android:type="linear">`;
+             }
           } else {
-            // Fix: Referencing bbox.minY instead of non-existent minY
             const w = isFinite(bbox.maxX) ? bbox.maxX - bbox.minX : 0, h = isFinite(bbox.maxY) ? bbox.maxY - bbox.minY : 0;
+            const parseCoord = (val: string | undefined, size: number, min: number, def: string) => {
+                const v = val ?? def;
+                if (v.endsWith('%')) return min + (parseFloat(v) / 100) * size;
+                const num = parseFloat(v);
+                if (units === 'objectBoundingBox') return min + num * size;
+                return num;
+            };
+            const applyGlobal = (val: number, isX: boolean) => val + (isX ? globalMatrix.e : globalMatrix.f);
             let cx = parseCoord(grad.cx, w, bbox.minX, '0.5'), cy = parseCoord(grad.cy, h, bbox.minY, '0.5'), r = parseCoord(grad.r, Math.sqrt(w*w + h*h), 0, '0.5');
             if (units === 'userSpaceOnUse') { cx = applyGlobal(cx, true); cy = applyGlobal(cy, false); }
             pathXml += ` \n          android:centerX="${cx.toFixed(3)}"\n          android:centerY="${cy.toFixed(3)}"\n          android:gradientRadius="${r.toFixed(3)}"\n          android:type="radial">`;
@@ -708,7 +734,7 @@ class SvgToAndroidConverter {
     }
 
     private fun appendPath(d: String, styles: Map<String, String>, matrix: Matrix, res: StringBuilder, globalMatrix: Matrix) {
-        val (pathData, bbox) = flattenPath(d, matrix); if (pathData.isEmpty()) return
+        val (pathData, bbox, localBbox) = flattenPath(d, matrix); if (pathData.isEmpty()) return
         val fill = styles["fill"]; val stroke = styles["stroke"]
         val opacity = styles["opacity"] ?: "1"
         val fillAlpha = styles["fill-opacity"]?.toDoubleOrNull() ?: opacity.toDoubleOrNull() ?: 1.0
@@ -723,25 +749,46 @@ class SvgToAndroidConverter {
             if (grad != null) {
                 if (fillAlpha != 1.0) res.append(" android:fillAlpha=\\"\${fmt(fillAlpha)}\\"")
                 res.append(">\\n    <aapt:attr name=\\"android:fillColor\\">\\n      <gradient ")
-                val w = bbox.maxX - bbox.minX; val h = bbox.maxY - bbox.minY; val units = grad.units ?: "objectBoundingBox"
-                fun resolve(k: String, size: Double, min: Double, def: String): Double {
-                    val v = grad.coords[k] ?: def
-                    return if (v.endsWith("%")) min + (v.removeSuffix("%").toDoubleOrNull()?.let { it / 100.0 } ?: 0.0) * size
-                    else if (units == "objectBoundingBox") min + (v.toDoubleOrNull() ?: 0.0) * size
-                    else v.toDoubleOrNull() ?: 0.0
+                val units = grad.units ?: "objectBoundingBox"
+                
+                fun resolveRaw(k: String, def: String): Double {
+                   val v = grad.coords[k] ?: def
+                   return if (v.endsWith("%")) (v.removeSuffix("%").toDoubleOrNull() ?: 0.0) / 100.0 else (v.toDoubleOrNull() ?: 0.0)
                 }
-                fun applyGlobal(v: Double, isX: Boolean) = v + if(isX) globalMatrix.e else globalMatrix.f
+
                 if (grad.type == "linear") {
-                    var x1 = resolve("x1", w, bbox.minX, "0"); var y1 = resolve("y1", h, bbox.minY, "0"); var x2 = resolve("x2", w, bbox.minX, "1"); var y2 = resolve("y2", h, bbox.minY, "0")
-                    if (units == "userSpaceOnUse") { x1 = applyGlobal(x1, true); y1 = applyGlobal(y1, false); x2 = applyGlobal(x2, true); y2 = applyGlobal(y2, false) }
-                    res.append("android:startX=\\"\${fmt(x1)}\\" android:startY=\\"\${fmt(y1)}\\" android:endX=\\"\${fmt(x2)}\\" android:endY=\\"\${fmt(y2)}\\" android:type=\\"linear\\">\\n")
+                    if (units == "objectBoundingBox") {
+                        val lw = localBbox.maxX - localBbox.minX; val lh = localBbox.maxY - localBbox.minY
+                        val lx1 = localBbox.minX + resolveRaw("x1", "0") * lw
+                        val ly1 = localBbox.minY + resolveRaw("y1", "0") * lh
+                        val lx2 = localBbox.minX + resolveRaw("x2", "1") * lw
+                        val ly2 = localBbox.minY + resolveRaw("y2", "0") * lh
+                        
+                        // Fixed: Correctly apply shape transform to gradient points
+                        val p1 = matrix.apply(lx1, ly1)
+                        val p2 = matrix.apply(lx2, ly2)
+                        
+                        res.append("android:startX=\\"\${fmt(p1.first)}\\" android:startY=\\"\${fmt(p1.second)}\\" android:endX=\\"\${fmt(p2.first)}\\" android:endY=\\"\${fmt(p2.second)}\\" android:type=\\"linear\\">\\n")
+                    } else {
+                        val p1 = globalMatrix.apply(grad.coords["x1"]?.toDoubleOrNull() ?: 0.0, grad.coords["y1"]?.toDoubleOrNull() ?: 0.0)
+                        val p2 = globalMatrix.apply(grad.coords["x2"]?.toDoubleOrNull() ?: 1.0, grad.coords["y2"]?.toDoubleOrNull() ?: 0.0)
+                        res.append("android:startX=\\"\${fmt(p1.first)}\\" android:startY=\\"\${fmt(p1.second)}\\" android:endX=\\"\${fmt(p2.first)}\\" android:endY=\\"\${fmt(p2.second)}\\" android:type=\\"linear\\">\\n")
+                    }
                 } else {
+                    val w = bbox.maxX - bbox.minX; val h = bbox.maxY - bbox.minY
+                    fun resolve(k: String, size: Double, min: Double, def: String): Double {
+                        val v = grad.coords[k] ?: def
+                        return if (v.endsWith("%")) min + (v.removeSuffix("%").toDoubleOrNull()?.let { it / 100.0 } ?: 0.0) * size
+                        else if (units == "objectBoundingBox") min + (v.toDoubleOrNull() ?: 0.0) * size
+                        else v.toDoubleOrNull() ?: 0.0
+                    }
+                    fun applyGlobal(v: Double, isX: Boolean) = v + if(isX) globalMatrix.e else globalMatrix.f
                     var cx = resolve("cx", w, bbox.minX, "0.5"); var cy = resolve("cy", h, bbox.minY, "0.5"); val r = resolve("r", sqrt(w*w + h*h), 0.0, "0.5")
                     if (units == "userSpaceOnUse") { cx = applyGlobal(cx, true); cy = applyGlobal(cy, false) }
                     res.append("android:centerX=\\"\${fmt(cx)}\\" android:centerY=\\"\${fmt(cy)}\\" android:gradientRadius=\\"\${fmt(r)}\\" android:type=\\"radial\\">\\n")
                 }
                 grad.stops.forEach { res.append("        <item android:offset=\\"\${fmt(it.offset)}\\" android:color=\\"\${parseColor(it.color, it.opacity)}\\"/>\\n") }
-                res.append("      </gradient>\\n    </aapt:attr>\n  </path>\\n"); return
+                res.append("      </gradient>\\n    </aapt:attr>\\n  </path>\\n"); return
             }
         }
         
@@ -786,11 +833,16 @@ class SvgToAndroidConverter {
         return m
     }
 
-    private fun flattenPath(d: String, matrix: Matrix): Pair<String, BBox> {
+    private fun flattenPath(d: String, matrix: Matrix): Triple<String, BBox, BBox> {
         val tokens = tokenRegex.findAll(d).map { it.value }.toList(); var i = 0; var curX = 0.0; var curY = 0.0; var startX = 0.0; var startY = 0.0
         var cmd = ""; val res = StringBuilder(); var minX = Double.MAX_VALUE; var minY = Double.MAX_VALUE; var maxX = -Double.MAX_VALUE; var maxY = -Double.MAX_VALUE
+        var lMinX = Double.MAX_VALUE; var lMinY = Double.MAX_VALUE; var lMaxX = -Double.MAX_VALUE; var lMaxY = -Double.MAX_VALUE
         var prevCx = 0.0; var prevCy = 0.0; var prevCmdWasCubic = false
-        fun update(x: Double, y: Double) { val p = matrix.apply(x, y); minX = min(minX, p.first); minY = min(minY, p.second); maxX = max(maxX, p.first); maxY = max(maxY, p.second) }
+        fun update(x: Double, y: Double) { 
+            val p = matrix.apply(x, y); 
+            minX = min(minX, p.first); minY = min(minY, p.second); maxX = max(maxX, p.first); maxY = max(maxY, p.second)
+            lMinX = min(lMinX, x); lMinY = min(lMinY, y); lMaxX = max(lMaxX, x); lMaxY = max(lMaxY, y)
+        }
         while (i < tokens.size) {
             val token = tokens[i]; if (token.length == 1 && token[0].isLetter()) { cmd = token; i++ }
             val isRel = cmd[0].isLowerCase(); val upper = cmd.uppercase()
@@ -809,7 +861,7 @@ class SvgToAndroidConverter {
                 else -> i++
             }
         }
-        return Pair(res.toString().trim(), BBox(minX, minY, maxX, maxY))
+        return Triple(res.toString().trim(), BBox(minX, minY, maxX, maxY), BBox(lMinX, lMinY, lMaxX, lMaxY))
     }
 
     private fun createDocument(xml: String): SvgNode {
