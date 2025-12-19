@@ -24,7 +24,7 @@ const Checkerboard = ({ children, className = "" }: { children: React.ReactNode,
     backgroundSize: '20px 20px',
     backgroundPosition: '0 0, 0 10px, 10px -10px, -10px 0px'
   }}>
-    <div className="flex items-center justify-center p-8 min-h-[160px] w-full h-full">
+    <div className="flex items-center justify-center p-4 min-h-[140px] w-full h-full">
       {children}
     </div>
   </div>
@@ -181,7 +181,7 @@ const VectorXmlPreview = ({ xml }: { xml: string }) => {
         <svg 
           viewBox={`0 0 ${viewportWidth} ${viewportHeight}`} 
           width="100%" height="100%" 
-          className="max-w-[120px] max-h-[120px] drop-shadow-md"
+          className="max-w-[100px] max-h-[100px] drop-shadow-md"
         >
           <defs>{defs}</defs>
           {paths}
@@ -265,11 +265,11 @@ const App: React.FC = () => {
             <div className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded font-bold uppercase">Source Input</div>
           </div>
           
-          <div className="h-48">
+          <div className="h-40 sm:h-48">
             <Checkerboard>
               {inputMode === 'svg' ? (
                 <div 
-                  className="w-full h-full flex items-center justify-center transition-transform hover:scale-110 duration-300"
+                  className="w-full h-full flex items-center justify-center transition-transform hover:scale-105 duration-300 [&>svg]:max-w-[100px] [&>svg]:max-h-[100px] [&>svg]:w-auto [&>svg]:h-auto"
                   dangerouslySetInnerHTML={{ __html: svgInput }} 
                 />
               ) : (
@@ -322,11 +322,11 @@ const App: React.FC = () => {
           </div>
 
           <div className="flex flex-col space-y-4 flex-1 overflow-hidden">
-            <div className="h-48">
+            <div className="h-40 sm:h-48">
               <Checkerboard className="border-indigo-100 ring-2 ring-indigo-500/5">
                 {activeTab === 'simplified_svg' ? (
                   <div 
-                    className="w-full h-full flex items-center justify-center transition-transform hover:scale-110 duration-300"
+                    className="w-full h-full flex items-center justify-center transition-transform hover:scale-105 duration-300 [&>svg]:max-w-[100px] [&>svg]:max-h-[100px] [&>svg]:w-auto [&>svg]:h-auto"
                     dangerouslySetInnerHTML={{ __html: simplifiedSvgOutput }} 
                   />
                 ) : (

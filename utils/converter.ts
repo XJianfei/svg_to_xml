@@ -413,6 +413,7 @@ export const svgToAndroidXml = (svgString: string): string => {
             if (units === 'userSpaceOnUse') { x1 = applyGlobal(x1, true); y1 = applyGlobal(y1, false); x2 = applyGlobal(x2, true); y2 = applyGlobal(y2, false); }
             pathXml += ` \n          android:startX="${x1.toFixed(3)}"\n          android:startY="${y1.toFixed(3)}"\n          android:endX="${x2.toFixed(3)}"\n          android:endY="${y2.toFixed(3)}"\n          android:type="linear">`;
           } else {
+            // Fix: Referencing bbox.minY instead of non-existent minY
             const w = isFinite(bbox.maxX) ? bbox.maxX - bbox.minX : 0, h = isFinite(bbox.maxY) ? bbox.maxY - bbox.minY : 0;
             let cx = parseCoord(grad.cx, w, bbox.minX, '0.5'), cy = parseCoord(grad.cy, h, bbox.minY, '0.5'), r = parseCoord(grad.r, Math.sqrt(w*w + h*h), 0, '0.5');
             if (units === 'userSpaceOnUse') { cx = applyGlobal(cx, true); cy = applyGlobal(cy, false); }
@@ -430,7 +431,7 @@ export const svgToAndroidXml = (svgString: string): string => {
           pathXml += `\n      android:strokeColor="${parseColor(stroke, strokeOpacity)}"`;
           if (strokeWidth) pathXml += `\n      android:strokeWidth="${strokeWidth}"`;
           if (lineCap) pathXml += `\n      android:strokeLineCap="${lineCap}"`;
-          if (lineJoin) pathXml += `\n      android:strokeLineJoin="${lineJoin}"`;
+          if (lineJoin) pathXml += `\n      android:strokeLinejoin="${lineJoin}"`;
         }
         pathXml += `/>\n`;
       }
@@ -461,10 +462,10 @@ export const svgToSimplifiedSvg = (svgString: string): string => {
 
   const processNode = (el: Element, currentMatrix: Matrix) => {
     const tag = el.tagName.toLowerCase();
-    const style = el.getAttribute('style') || '';
+    const styleAttr = el.getAttribute('style') || '';
     const mergedStyles: Record<string, string> = {};
     Array.from(el.attributes).forEach(attr => mergedStyles[attr.name] = attr.value);
-    style.split(';').forEach(s => {
+    styleAttr.split(';').forEach(s => {
       const [k, v] = s.split(':');
       if (k && v) mergedStyles[k.trim()] = v.trim();
     });
@@ -489,9 +490,19 @@ export const svgToSimplifiedSvg = (svgString: string): string => {
     } else if (tag === 'circle') {
       const cx = parseFloat(mergedStyles['cx'] || '0'), cy = parseFloat(mergedStyles['cy'] || '0'), r = parseFloat(mergedStyles['r'] || '0');
       d = `M${cx - r},${cy} a${r},${r} 0 1,0 ${r * 2},0 a${r},${r} 0 1,0 ${-r * 2},0`;
+    } else if (tag === 'ellipse') {
+      const cx = parseFloat(mergedStyles['cx'] || '0'), cy = parseFloat(mergedStyles['cy'] || '0'), rx = parseFloat(mergedStyles['rx'] || '0'), ry = parseFloat(mergedStyles['ry'] || '0');
+      d = `M${cx - rx},${cy} a${rx},${ry} 0 1,0 ${rx * 2},0 a${rx},${ry} 0 1,0 ${-rx * 2},0`;
     } else if (tag === 'line') {
       const x1 = parseFloat(mergedStyles['x1'] || '0'), y1 = parseFloat(mergedStyles['y1'] || '0'), x2 = parseFloat(mergedStyles['x2'] || '0'), y2 = parseFloat(mergedStyles['y2'] || '0');
       d = `M${x1},${y1} L${x2},${y2}`;
+    } else if (tag === 'polyline' || tag === 'polygon') {
+      const points = mergedStyles['points']?.trim().split(/[ ,]+/).map(parseFloat) || [];
+      if (points.length >= 2) {
+        d = `M${points[0]},${points[1]}`;
+        for (let i = 2; i < points.length; i += 2) d += ` L${points[i]},${points[i+1]}`;
+        if (tag === 'polygon') d += ' Z';
+      }
     }
 
     if (d) {
@@ -730,7 +741,7 @@ class SvgToAndroidConverter {
                     res.append("android:centerX=\\"\${fmt(cx)}\\" android:centerY=\\"\${fmt(cy)}\\" android:gradientRadius=\\"\${fmt(r)}\\" android:type=\\"radial\\">\\n")
                 }
                 grad.stops.forEach { res.append("        <item android:offset=\\"\${fmt(it.offset)}\\" android:color=\\"\${parseColor(it.color, it.opacity)}\\"/>\\n") }
-                res.append("      </gradient>\\n    </aapt:attr>\\n  </path>\\n"); return
+                res.append("      </gradient>\\n    </aapt:attr>\n  </path>\\n"); return
             }
         }
         
@@ -756,7 +767,7 @@ class SvgToAndroidConverter {
     private fun parseColor(color: String, opacity: Double): String {
         if (color == "none") return "#00000000"
         var c = color.removePrefix("#").uppercase()
-        if (c.length == 3) c = "" + c[0] + c[0] + x[1] + c[1] + c[2] + c[2]
+        if (c.length == 3) c = "" + c[0] + c[0] + c[1] + c[1] + c[2] + c[2]
         val alpha = (opacity * 255.0).roundToInt().coerceIn(0, 255).toString(16).padStart(2, '0').uppercase()
         return "#" + alpha + (if (c.length == 6) c else "000000")
     }
