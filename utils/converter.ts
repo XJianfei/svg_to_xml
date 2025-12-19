@@ -412,8 +412,6 @@ export const svgToAndroidXml = (svgString: string): string => {
           };
 
           if (grad.type === 'linear') {
-             // Corrected: Use nodeMatrix to apply shape rotation to the gradient vector points.
-             // nodeMatrix already includes globalMatrix offset.
              if (units === 'objectBoundingBox') {
                 const lw = localBbox.maxX - localBbox.minX;
                 const lh = localBbox.maxY - localBbox.minY;
@@ -466,7 +464,7 @@ export const svgToAndroidXml = (svgString: string): string => {
     return '';
   };
 
-  Array.from(svg.children).forEach(child => { if (!['defs', 'style', 'metadata'].includes(child.tagName.toLowerCase())) xml += processNode(child, globalMatrix); });
+  Array.from(svg.children).forEach(child => { if (!['defs', 'style', 'metadata', 'filter'].includes(child.tagName.toLowerCase())) xml += processNode(child, globalMatrix); });
   return xml + '</vector>';
 };
 
@@ -547,7 +545,7 @@ export const svgToSimplifiedSvg = (svgString: string): string => {
     }
   };
 
-  Array.from(svg.children).forEach(child => { if (!['defs', 'style', 'metadata'].includes(child.tagName.toLowerCase())) processNode(child, globalMatrix); });
+  Array.from(svg.children).forEach(child => { if (!['defs', 'style', 'metadata', 'filter'].includes(child.tagName.toLowerCase())) processNode(child, globalMatrix); });
   
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${vbW} ${vbH}">\n  ${paths.join('\n  ')}\n</svg>`;
 };
@@ -681,6 +679,7 @@ class SvgToAndroidConverter {
     }
 
     private fun processNode(node: SvgNode, matrix: Matrix, res: StringBuilder, globalMatrix: Matrix) {
+        if (node.tagName.lowercase() == "filter") return
         val styles = mutableMapOf<String, String>(); node.getAttribute("class")?.let { classStyles[it]?.let { s -> styles.putAll(s) } }; styles.putAll(node.attributes)
         
         node.getAttribute("style")?.let {
@@ -764,7 +763,6 @@ class SvgToAndroidConverter {
                         val lx2 = localBbox.minX + resolveRaw("x2", "1") * lw
                         val ly2 = localBbox.minY + resolveRaw("y2", "0") * lh
                         
-                        // Fixed: Correctly apply shape transform to gradient points
                         val p1 = matrix.apply(lx1, ly1)
                         val p2 = matrix.apply(lx2, ly2)
                         
