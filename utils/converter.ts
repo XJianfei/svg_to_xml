@@ -40,16 +40,10 @@ class Matrix {
   }
 }
 
-interface GradientStop {
-  offset: string;
-  color: string;
-  opacity?: string;
-}
-
 interface GradientData {
   id: string;
   type: 'linear' | 'radial';
-  stops: GradientStop[];
+  stops: { offset: string; color: string; opacity?: string }[];
   x1?: string; y1?: string; x2?: string; y2?: string;
   cx?: string; cy?: string; r?: string;
   units?: 'objectBoundingBox' | 'userSpaceOnUse'; 
@@ -103,7 +97,6 @@ const parseSvgTransform = (transformStr: string | null): Matrix => {
   return matrix;
 };
 
-// Robust path tokenization
 const PATH_TOKEN_REGEX = /[+-]?[0-9]*\.?[0-9]+(?:[eE][+-]?[0-9]+)?|[a-zA-Z]/g;
 
 const transformPath = (d: string, matrix: Matrix): { pathData: string, bbox: { minX: number, minY: number, maxX: number, maxY: number } } => {
@@ -332,15 +325,27 @@ export const svgToAndroidXml = (svgString: string): string => {
   let xml = `<vector xmlns:android="http://schemas.android.com/apk/res/android"\n    xmlns:aapt="http://schemas.android.com/aapt"\n    android:width="${svg.getAttribute('width')?.replace('px', '') || vbW}dp"\n    android:height="${svg.getAttribute('height')?.replace('px', '') || vbH}dp"\n    android:viewportWidth="${vbW}"\n    android:viewportHeight="${vbH}">\n`;
 
   const processNode = (el: Element, currentMatrix: Matrix): string => {
-    if (el.getAttribute('opacity') === '0' || el.getAttribute('display') === 'none') return '';
     const tag = el.tagName.toLowerCase();
     const elClass = el.getAttribute('class');
     const mergedStyles: Record<string, string> = {};
     if (elClass && classStyles[elClass]) Object.assign(mergedStyles, classStyles[elClass]);
     Array.from(el.attributes).forEach(attr => mergedStyles[attr.name] = attr.value);
+    
+    const inlineStyle = el.getAttribute('style');
+    if (inlineStyle) {
+      inlineStyle.split(';').forEach(s => {
+        const [k, v] = s.split(':');
+        if (k && v) mergedStyles[k.trim()] = v.trim();
+      });
+    }
+
+    const opacity = mergedStyles['opacity'];
+    if (opacity === '0' || mergedStyles['display'] === 'none') return '';
+
     const transform = mergedStyles['transform'];
     const nodeMatrix = currentMatrix.multiply(parseSvgTransform(transform));
     if (tag === 'g') return Array.from(el.children).map(child => processNode(child, nodeMatrix)).join('');
+    
     let d = '';
     if (tag === 'path') d = mergedStyles['d'] || '';
     else if (tag === 'rect') {
@@ -353,17 +358,28 @@ export const svgToAndroidXml = (svgString: string): string => {
     } else if (tag === 'circle') {
       const cx = parseFloat(mergedStyles['cx'] || '0'), cy = parseFloat(mergedStyles['cy'] || '0'), r = parseFloat(mergedStyles['r'] || '0');
       d = `M${cx - r},${cy} a${r},${r} 0 1,0 ${r * 2},0 a${r},${r} 0 1,0 ${-r * 2},0`;
+    } else if (tag === 'line') {
+      const x1 = parseFloat(mergedStyles['x1'] || '0'), y1 = parseFloat(mergedStyles['y1'] || '0'), x2 = parseFloat(mergedStyles['x2'] || '0'), y2 = parseFloat(mergedStyles['y2'] || '0');
+      d = `M${x1},${y1} L${x2},${y2}`;
     }
+
     if (d) {
       const res = transformPath(d, nodeMatrix);
       if (!res.pathData) return '';
       const { pathData, bbox } = res;
+      
       const fill = mergedStyles['fill'];
-      const fillOpacity = mergedStyles['fill-opacity'] || mergedStyles['opacity'] || '1';
+      const fillOpacity = mergedStyles['fill-opacity'] || opacity || '1';
       const stroke = mergedStyles['stroke'];
-      const strokeWidth = mergedStyles['stroke-width'];
-      const strokeOpacity = mergedStyles['stroke-opacity'] || mergedStyles['opacity'] || '1';
+      const strokeWidth = mergedStyles['stroke-width']?.replace('px', '');
+      const strokeOpacity = mergedStyles['stroke-opacity'] || opacity || '1';
+      const lineCap = mergedStyles['stroke-linecap'];
+      const lineJoin = mergedStyles['stroke-linejoin'];
+
+      if ((!fill || fill === 'none' || fillOpacity === '0') && (!stroke || stroke === 'none' || strokeOpacity === '0')) return '';
+
       let pathXml = `  <path\n      android:pathData="${pathData}"`;
+      
       if (fill?.startsWith('url(#')) {
         const gradId = fill!.substring(5, fill!.length - 1);
         const grad = gradients[gradId];
@@ -399,10 +415,12 @@ export const svgToAndroidXml = (svgString: string): string => {
           pathXml += `\n      </gradient>\n    </aapt:attr>\n  </path>\n`;
         } else pathXml += `\n      android:fillColor="#000000"/>\n`;
       } else {
-        pathXml += `\n      android:fillColor="${parseColor(fill || '#000000', fillOpacity)}"`;
+        pathXml += `\n      android:fillColor="${parseColor(fill || (stroke ? 'none' : '#000000'), fillOpacity)}"`;
         if (stroke && stroke !== 'none') {
           pathXml += `\n      android:strokeColor="${parseColor(stroke, strokeOpacity)}"`;
           if (strokeWidth) pathXml += `\n      android:strokeWidth="${strokeWidth}"`;
+          if (lineCap) pathXml += `\n      android:strokeLineCap="${lineCap}"`;
+          if (lineJoin) pathXml += `\n      android:strokeLineJoin="${lineJoin}"`;
         }
         pathXml += `/>\n`;
       }
@@ -545,22 +563,37 @@ class SvgToAndroidConverter {
 
     private fun processNode(node: SvgNode, matrix: Matrix, res: StringBuilder, globalMatrix: Matrix) {
         val styles = mutableMapOf<String, String>(); node.getAttribute("class")?.let { classStyles[it]?.let { s -> styles.putAll(s) } }; styles.putAll(node.attributes)
-        if (styles["opacity"] == "0" || styles["display"] == "none") return
+        
+        node.getAttribute("style")?.let {
+           it.split(";").forEach { s ->
+               val kv = s.split(":")
+               if (kv.size == 2) styles[kv[0].trim()] = kv[1].trim()
+           }
+        }
+
+        val opacityAttr = styles["opacity"] ?: "1"
+        if (opacityAttr == "0" || styles["display"] == "none") return
+        
         val nodeMatrix = matrix.multiply(parseTransform(styles["transform"]))
         when (val tag = node.tagName.lowercase()) {
             "g" -> node.children.forEach { if (it is SvgNode) processNode(it, nodeMatrix, res, globalMatrix) }
-            "path", "rect", "circle" -> {
+            "path", "rect", "circle", "line" -> {
                 val d = when(tag) {
                     "path" -> styles["d"] ?: ""
                     "rect" -> {
                         val x = styles["x"]?.toDoubleOrNull() ?: 0.0; val y = styles["y"]?.toDoubleOrNull() ?: 0.0
                         val w = styles["width"]?.toDoubleOrNull() ?: 0.0; val h = styles["height"]?.toDoubleOrNull() ?: 0.0
                         val rx = styles["rx"]?.toDoubleOrNull() ?: 0.0; val ry = styles["ry"]?.toDoubleOrNull() ?: rx
-                        if (rx == 0.0 && ry == 0.0) "M \$x \$y h \$w v \$h h -\$w z"
-                        else "M \${x+rx} \$y L \${x+w-rx} \$y A \$rx \$ry 0 0 1 \${x+w} \${y+ry} L \${x+w} \${y+h-ry} A \$rx \$ry 0 0 1 \${x+w-rx} \${y+h} L \${x+rx} \${y+h} A \$rx \$ry 0 0 1 \$x \${y+h-ry} L \$x \${y+ry} A \$rx \$ry 0 0 1 \${x+rx} \$y z"
+                        if (rx == 0.0 && ry == 0.0) "M \${fmt(x)} \${fmt(y)} h \${fmt(w)} v \${fmt(h)} h \${fmt(-w)} z"
+                        else "M \${fmt(x+rx)} \${fmt(y)} L \${fmt(x+w-rx)} \${fmt(y)} A \${fmt(rx)} \${fmt(ry)} 0 0 1 \${fmt(x+w)} \${fmt(y+ry)} L \${fmt(x+w)} \${fmt(y+h-ry)} A \${fmt(rx)} \${fmt(ry)} 0 0 1 \${fmt(x+w-rx)} \${fmt(y+h)} L \${fmt(x+rx)} \${fmt(y+h)} A \${fmt(rx)} \${fmt(ry)} 0 0 1 \${fmt(x)} \${fmt(y+h-ry)} L \${fmt(x)} \${fmt(y+ry)} A \${fmt(rx)} \${fmt(y+ry)} 0 0 1 \${fmt(x+rx)} \${fmt(y)} z"
+                    }
+                    "line" -> {
+                        val x1 = styles["x1"]?.toDoubleOrNull() ?: 0.0; val y1 = styles["y1"]?.toDoubleOrNull() ?: 0.0
+                        val x2 = styles["x2"]?.toDoubleOrNull() ?: 0.0; val y2 = styles["y2"]?.toDoubleOrNull() ?: 0.0
+                        "M \${fmt(x1)} \${fmt(y1)} L \${fmt(x2)} \${fmt(y2)}"
                     }
                     else -> { val cx = styles["cx"]?.toDoubleOrNull() ?: 0.0; val cy = styles["cy"]?.toDoubleOrNull() ?: 0.0; val r = styles["r"]?.toDoubleOrNull() ?: 0.0
-                        "M \${cx-r} \$cy a \$r \$r 0 1,0 \${r*2} 0 a \$r \$r 0 1,0 \${-r*2} 0"
+                        "M \${fmt(cx-r)} \${fmt(cy)} a \${fmt(r)} \${fmt(r)} 0 1,0 \${fmt(r*2)} 0 a \${fmt(r)} \${fmt(r)} 0 1,0 \${fmt(-r*2)} 0"
                     }
                 }
                 appendPath(d, styles, nodeMatrix, res, globalMatrix)
@@ -570,9 +603,16 @@ class SvgToAndroidConverter {
 
     private fun appendPath(d: String, styles: Map<String, String>, matrix: Matrix, res: StringBuilder, globalMatrix: Matrix) {
         val (pathData, bbox) = flattenPath(d, matrix); if (pathData.isEmpty()) return
-        val fill = styles["fill"] ?: "#000000"; val fillAlpha = styles["fill-opacity"]?.toDoubleOrNull() ?: styles["opacity"]?.toDoubleOrNull() ?: 1.0
+        val fill = styles["fill"]; val stroke = styles["stroke"]
+        val opacity = styles["opacity"] ?: "1"
+        val fillAlpha = styles["fill-opacity"]?.toDoubleOrNull() ?: opacity.toDoubleOrNull() ?: 1.0
+        val strokeAlpha = styles["stroke-opacity"]?.toDoubleOrNull() ?: opacity.toDoubleOrNull() ?: 1.0
+        
+        if ((fill == "none" || fillAlpha == 0.0) && (stroke == null || stroke == "none" || strokeAlpha == 0.0)) return
+
         res.append("  <path android:pathData=\\"\${pathData}\\"")
-        if (fill.startsWith("url(#")) {
+        
+        if (fill != null && fill.startsWith("url(#")) {
             val gradId = fill.substring(5, fill.length - 1); val grad = gradients[gradId]
             if (grad != null) {
                 if (fillAlpha != 1.0) res.append(" android:fillAlpha=\\"\${fmt(fillAlpha)}\\"")
@@ -580,7 +620,7 @@ class SvgToAndroidConverter {
                 val w = bbox.maxX - bbox.minX; val h = bbox.maxY - bbox.minY; val units = grad.units ?: "objectBoundingBox"
                 fun resolve(k: String, size: Double, min: Double, def: String): Double {
                     val v = grad.coords[k] ?: def
-                    return if (v.endsWith("%")) min + (v.removeSuffix("%").toDoubleOrNull()?.let { it / 100.0 } ?: 0.0) * size
+                    return if (v.endsWith("%")) min + (v.removeSuffix("%").toDoubleOrNull() ?: 0.0) * size
                     else if (units == "objectBoundingBox") min + (v.toDoubleOrNull() ?: 0.0) * size
                     else v.toDoubleOrNull() ?: 0.0
                 }
@@ -598,7 +638,18 @@ class SvgToAndroidConverter {
                 res.append("      </gradient>\\n    </aapt:attr>\\n  </path>\\n"); return
             }
         }
-        res.append(" android:fillColor=\\"\${parseColor(fill, fillAlpha)}\\"/>\\n")
+        
+        val finalFill = fill ?: (if (stroke != null) "none" else "#000000")
+        res.append(" android:fillColor=\\"\${parseColor(finalFill, fillAlpha)}\\"")
+        
+        if (stroke != null && stroke != "none") {
+            res.append(" android:strokeColor=\\"\${parseColor(stroke, strokeAlpha)}\\"")
+            styles["stroke-width"]?.let { res.append(" android:strokeWidth=\\"\${it.replace("px", "")}\\"") }
+            styles["stroke-linecap"]?.let { res.append(" android:strokeLineCap=\\"\${it}\\"") }
+            styles["stroke-linejoin"]?.let { res.append(" android:strokeLineJoin=\\"\${it}\\"") }
+        }
+        
+        res.append("/>\\n")
     }
     
     private fun fmt(d: Double): String {
@@ -608,6 +659,7 @@ class SvgToAndroidConverter {
     }
 
     private fun parseColor(color: String, opacity: Double): String {
+        if (color == "none") return "#00000000"
         var c = color.removePrefix("#").uppercase()
         if (c.length == 3) c = "" + c[0] + c[0] + c[1] + c[1] + c[2] + c[2]
         val alpha = (opacity * 255.0).roundToInt().coerceIn(0, 255).toString(16).padStart(2, '0').uppercase()

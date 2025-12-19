@@ -9,10 +9,13 @@ const CheckIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
 );
 const AndroidIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4"/><path d="m16.2 3.8 2 2"/><path d="m7.8 3.8-2 2"/><path d="M12 11v8"/><path d="M6 13a6 6 0 0 1 12 0v5a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2z"/></svg>
+  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4"/><path d="m16.2 3.8 2 2"/><path d="m7.8 3.8-2 2"/><path d="M12 11v8"/><path d="M6 13a6 6 0 0 1 6 6v5a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2z"/></svg>
 );
 const KotlinIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 2h20L2 22z"/><path d="M2 12h10L2 22z"/></svg>
+);
+const SvgFileIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15.5l1-1 1 1"/><path d="M12 12v3l1 1"/><path d="M15 13l-1 1 1 1"/></svg>
 );
 
 const Checkerboard = ({ children, className = "" }: { children: React.ReactNode, className?: string }) => (
@@ -191,18 +194,24 @@ const VectorXmlPreview = ({ xml }: { xml: string }) => {
 
 const App: React.FC = () => {
   const [svgInput, setSvgInput] = useState<string>(DEFAULT_SVG);
+  const [xmlInput, setXmlInput] = useState<string>('');
   const [xmlOutput, setXmlOutput] = useState<string>('');
+  const [inputMode, setInputMode] = useState<'svg' | 'vector_xml'>('svg');
   const [activeTab, setActiveTab] = useState<'xml' | 'kmp_logic'>('xml');
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    try { 
-      const converted = svgToAndroidXml(svgInput);
-      setXmlOutput(converted);
-    } catch (e) {
-      console.error('Conversion failed', e);
+    if (inputMode === 'svg') {
+      try { 
+        const converted = svgToAndroidXml(svgInput);
+        setXmlOutput(converted);
+      } catch (e) {
+        console.error('Conversion failed', e);
+      }
+    } else {
+      setXmlOutput(xmlInput);
     }
-  }, [svgInput]);
+  }, [svgInput, xmlInput, inputMode]);
 
   const copyToClipboard = async () => {
     const text = activeTab === 'xml' ? xmlOutput : getKotlinConverterLogic();
@@ -227,25 +236,42 @@ const App: React.FC = () => {
         {/* Input Column */}
         <div className="flex flex-col space-y-4 overflow-hidden">
           <div className="flex items-center justify-between">
-            <h2 className="text-xs font-black text-slate-400 uppercase tracking-widest">SVG Source</h2>
-            <div className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded font-bold">PREVIEW</div>
+            <div className="flex space-x-1 p-1 bg-slate-200 rounded-lg">
+              <button 
+                onClick={() => setInputMode('svg')} 
+                className={`px-4 py-1.5 rounded-md text-[10px] font-bold flex items-center space-x-2 transition-all ${inputMode === 'svg' ? 'bg-white shadow text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                <SvgFileIcon /><span>SVG SOURCE</span>
+              </button>
+              <button 
+                onClick={() => setInputMode('vector_xml')} 
+                className={`px-4 py-1.5 rounded-md text-[10px] font-bold flex items-center space-x-2 transition-all ${inputMode === 'vector_xml' ? 'bg-white shadow text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                <AndroidIcon /><span>VECTOR XML</span>
+              </button>
+            </div>
+            <div className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded font-bold uppercase">Source Input</div>
           </div>
           
           <div className="h-48">
             <Checkerboard>
-              <div 
-                className="w-full h-full flex items-center justify-center transition-transform hover:scale-110 duration-300"
-                dangerouslySetInnerHTML={{ __html: svgInput }} 
-              />
+              {inputMode === 'svg' ? (
+                <div 
+                  className="w-full h-full flex items-center justify-center transition-transform hover:scale-110 duration-300"
+                  dangerouslySetInnerHTML={{ __html: svgInput }} 
+                />
+              ) : (
+                <VectorXmlPreview xml={xmlInput} />
+              )}
             </Checkerboard>
           </div>
 
           <div className="flex-1 relative bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm flex flex-col min-h-[300px]">
             <textarea
-              value={svgInput}
-              onChange={(e) => setSvgInput(e.target.value)}
+              value={inputMode === 'svg' ? svgInput : xmlInput}
+              onChange={(e) => inputMode === 'svg' ? setSvgInput(e.target.value) : setXmlInput(e.target.value)}
               className="w-full h-full p-6 code-font text-[13px] outline-none resize-none scrollbar-thin scrollbar-thumb-slate-200"
-              placeholder="Paste SVG code here..."
+              placeholder={inputMode === 'svg' ? "Paste SVG code here..." : "Paste Android Vector XML here..."}
               spellCheck={false}
             />
           </div>
@@ -259,7 +285,7 @@ const App: React.FC = () => {
                 onClick={() => setActiveTab('xml')} 
                 className={`px-4 py-1.5 rounded-md text-[10px] font-bold flex items-center space-x-2 transition-all ${activeTab === 'xml' ? 'bg-white shadow text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
               >
-                <AndroidIcon /><span>VECTOR XML</span>
+                <AndroidIcon /><span>RENDER PREVIEW</span>
               </button>
               <button 
                 onClick={() => setActiveTab('kmp_logic')} 
@@ -288,7 +314,7 @@ const App: React.FC = () => {
 
             <div className="flex-1 bg-slate-900 rounded-xl border border-slate-800 shadow-xl relative overflow-hidden min-h-[300px]">
               <div className="absolute top-4 right-4 text-[9px] text-slate-500 font-bold uppercase z-20">
-                {activeTab === 'xml' ? 'Flattened Output' : 'KMP Engine Logic'}
+                {activeTab === 'xml' ? 'Vector Data' : 'KMP Engine Logic'}
               </div>
               <div className="w-full h-full p-6 overflow-auto code-font text-[11px] text-slate-300 scrollbar-thin scrollbar-thumb-slate-700">
                 <pre className="whitespace-pre-wrap break-all">
