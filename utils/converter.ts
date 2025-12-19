@@ -358,9 +358,19 @@ export const svgToAndroidXml = (svgString: string): string => {
     } else if (tag === 'circle') {
       const cx = parseFloat(mergedStyles['cx'] || '0'), cy = parseFloat(mergedStyles['cy'] || '0'), r = parseFloat(mergedStyles['r'] || '0');
       d = `M${cx - r},${cy} a${r},${r} 0 1,0 ${r * 2},0 a${r},${r} 0 1,0 ${-r * 2},0`;
+    } else if (tag === 'ellipse') {
+      const cx = parseFloat(mergedStyles['cx'] || '0'), cy = parseFloat(mergedStyles['cy'] || '0'), rx = parseFloat(mergedStyles['rx'] || '0'), ry = parseFloat(mergedStyles['ry'] || '0');
+      d = `M${cx - rx},${cy} a${rx},${ry} 0 1,0 ${rx * 2},0 a${rx},${ry} 0 1,0 ${-rx * 2},0`;
     } else if (tag === 'line') {
       const x1 = parseFloat(mergedStyles['x1'] || '0'), y1 = parseFloat(mergedStyles['y1'] || '0'), x2 = parseFloat(mergedStyles['x2'] || '0'), y2 = parseFloat(mergedStyles['y2'] || '0');
       d = `M${x1},${y1} L${x2},${y2}`;
+    } else if (tag === 'polyline' || tag === 'polygon') {
+      const points = mergedStyles['points']?.trim().split(/[ ,]+/).map(parseFloat) || [];
+      if (points.length >= 2) {
+        d = `M${points[0]},${points[1]}`;
+        for (let i = 2; i < points.length; i += 2) d += ` L${points[i]},${points[i+1]}`;
+        if (tag === 'polygon') d += ' Z';
+      }
     }
 
     if (d) {
@@ -431,6 +441,78 @@ export const svgToAndroidXml = (svgString: string): string => {
 
   Array.from(svg.children).forEach(child => { if (!['defs', 'style', 'metadata'].includes(child.tagName.toLowerCase())) xml += processNode(child, globalMatrix); });
   return xml + '</vector>';
+};
+
+export const svgToSimplifiedSvg = (svgString: string): string => {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svgString, 'image/svg+xml');
+  const svg = doc.querySelector('svg');
+  if (!svg) throw new Error('Invalid SVG');
+  
+  const viewBoxStr = svg.getAttribute('viewBox') || `0 0 ${svg.getAttribute('width') || 24} ${svg.getAttribute('height') || 24}`;
+  const viewBox = viewBoxStr.split(/[ ,]+/).map(Number);
+  const vbX = viewBox[0] || 0;
+  const vbY = viewBox[1] || 0;
+  const vbW = viewBox[2] || 24; 
+  const vbH = viewBox[3] || 24;
+  const globalMatrix = new Matrix(1, 0, 0, 1, -vbX, -vbY);
+
+  const paths: string[] = [];
+
+  const processNode = (el: Element, currentMatrix: Matrix) => {
+    const tag = el.tagName.toLowerCase();
+    const style = el.getAttribute('style') || '';
+    const mergedStyles: Record<string, string> = {};
+    Array.from(el.attributes).forEach(attr => mergedStyles[attr.name] = attr.value);
+    style.split(';').forEach(s => {
+      const [k, v] = s.split(':');
+      if (k && v) mergedStyles[k.trim()] = v.trim();
+    });
+
+    if (mergedStyles['opacity'] === '0' || mergedStyles['display'] === 'none') return;
+
+    const nodeMatrix = currentMatrix.multiply(parseSvgTransform(mergedStyles['transform']));
+    if (tag === 'g') {
+      Array.from(el.children).forEach(child => processNode(child, nodeMatrix));
+      return;
+    }
+
+    let d = '';
+    if (tag === 'path') d = mergedStyles['d'] || '';
+    else if (tag === 'rect') {
+      const x = parseFloat(mergedStyles['x'] || '0'), y = parseFloat(mergedStyles['y'] || '0'), w = parseFloat(mergedStyles['width'] || '0'), h = parseFloat(mergedStyles['height'] || '0');
+      const rx = parseFloat(mergedStyles['rx'] || '0'), ry = parseFloat(mergedStyles['ry'] || '0') || rx;
+      if (rx === 0 && ry === 0) d = `M${x},${y}h${w}v${h}h${-w}z`;
+      else {
+        d = `M${x + rx},${y} L${x + w - rx},${y} A${rx},${ry} 0 0 1 ${x + w},${y + ry} L${x + w},${y + h - ry} A${rx},${ry} 0 0 1 ${x + w - rx},${y + h} L${x + rx},${y + h} A${rx},${ry} 0 0 1 ${x},${y + h - ry} L${x},${y + ry} A${rx},${ry} 0 0 1 ${x + rx},${y} z`;
+      }
+    } else if (tag === 'circle') {
+      const cx = parseFloat(mergedStyles['cx'] || '0'), cy = parseFloat(mergedStyles['cy'] || '0'), r = parseFloat(mergedStyles['r'] || '0');
+      d = `M${cx - r},${cy} a${r},${r} 0 1,0 ${r * 2},0 a${r},${r} 0 1,0 ${-r * 2},0`;
+    } else if (tag === 'line') {
+      const x1 = parseFloat(mergedStyles['x1'] || '0'), y1 = parseFloat(mergedStyles['y1'] || '0'), x2 = parseFloat(mergedStyles['x2'] || '0'), y2 = parseFloat(mergedStyles['y2'] || '0');
+      d = `M${x1},${y1} L${x2},${y2}`;
+    }
+
+    if (d) {
+      const res = transformPath(d, nodeMatrix);
+      const fill = mergedStyles['fill'] || 'black';
+      const stroke = mergedStyles['stroke'] || 'none';
+      const strokeWidth = mergedStyles['stroke-width']?.replace('px', '') || '1';
+      const strokeCap = mergedStyles['stroke-linecap'] || 'butt';
+      
+      let p = `<path d="${res.pathData}" fill="${fill}"`;
+      if (stroke !== 'none') {
+        p += ` stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="${strokeCap}"`;
+      }
+      p += '/>';
+      paths.push(p);
+    }
+  };
+
+  Array.from(svg.children).forEach(child => { if (!['defs', 'style', 'metadata'].includes(child.tagName.toLowerCase())) processNode(child, globalMatrix); });
+  
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${vbW} ${vbH}">\n  ${paths.join('\n  ')}\n</svg>`;
 };
 
 export const getKotlinConverterLogic = (): string => {
@@ -577,7 +659,7 @@ class SvgToAndroidConverter {
         val nodeMatrix = matrix.multiply(parseTransform(styles["transform"]))
         when (val tag = node.tagName.lowercase()) {
             "g" -> node.children.forEach { if (it is SvgNode) processNode(it, nodeMatrix, res, globalMatrix) }
-            "path", "rect", "circle", "line" -> {
+            "path", "rect", "circle", "ellipse", "line", "polyline", "polygon" -> {
                 val d = when(tag) {
                     "path" -> styles["d"] ?: ""
                     "rect" -> {
@@ -592,11 +674,24 @@ class SvgToAndroidConverter {
                         val x2 = styles["x2"]?.toDoubleOrNull() ?: 0.0; val y2 = styles["y2"]?.toDoubleOrNull() ?: 0.0
                         "M \${fmt(x1)} \${fmt(y1)} L \${fmt(x2)} \${fmt(y2)}"
                     }
-                    else -> { val cx = styles["cx"]?.toDoubleOrNull() ?: 0.0; val cy = styles["cy"]?.toDoubleOrNull() ?: 0.0; val r = styles["r"]?.toDoubleOrNull() ?: 0.0
-                        "M \${fmt(cx-r)} \${fmt(cy)} a \${fmt(r)} \${fmt(r)} 0 1,0 \${fmt(r*2)} 0 a \${fmt(r)} \${fmt(r)} 0 1,0 \${fmt(-r*2)} 0"
+                    "circle", "ellipse" -> { 
+                        val cx = styles["cx"]?.toDoubleOrNull() ?: 0.0; val cy = styles["cy"]?.toDoubleOrNull() ?: 0.0; 
+                        val rx = styles["rx"]?.toDoubleOrNull() ?: styles["r"]?.toDoubleOrNull() ?: 0.0
+                        val ry = styles["ry"]?.toDoubleOrNull() ?: styles["r"]?.toDoubleOrNull() ?: 0.0
+                        "M \${fmt(cx-rx)} \${fmt(cy)} a \${fmt(rx)} \${fmt(ry)} 0 1,0 \${fmt(rx*2)} 0 a \${fmt(rx)} \${fmt(ry)} 0 1,0 \${fmt(-rx*2)} 0"
                     }
+                    "polyline", "polygon" -> {
+                        val pts = styles["points"]?.split(Regex("[ ,]+"))?.filter { it.isNotEmpty() }?.map { it.toDoubleOrNull() ?: 0.0 } ?: emptyList()
+                        if (pts.size >= 2) {
+                            val sb = StringBuilder("M \${fmt(pts[0])} \${fmt(pts[1])}")
+                            for (j in 2 until pts.size step 2) sb.append(" L \${fmt(pts[j])} \${fmt(pts[j+1])}")
+                            if (tag == "polygon") sb.append(" Z")
+                            sb.toString()
+                        } else ""
+                    }
+                    else -> ""
                 }
-                appendPath(d, styles, nodeMatrix, res, globalMatrix)
+                if (d.isNotEmpty()) appendPath(d, styles, nodeMatrix, res, globalMatrix)
             }
         }
     }
@@ -620,7 +715,7 @@ class SvgToAndroidConverter {
                 val w = bbox.maxX - bbox.minX; val h = bbox.maxY - bbox.minY; val units = grad.units ?: "objectBoundingBox"
                 fun resolve(k: String, size: Double, min: Double, def: String): Double {
                     val v = grad.coords[k] ?: def
-                    return if (v.endsWith("%")) min + (v.removeSuffix("%").toDoubleOrNull() ?: 0.0) * size
+                    return if (v.endsWith("%")) min + (v.removeSuffix("%").toDoubleOrNull()?.let { it / 100.0 } ?: 0.0) * size
                     else if (units == "objectBoundingBox") min + (v.toDoubleOrNull() ?: 0.0) * size
                     else v.toDoubleOrNull() ?: 0.0
                 }
@@ -661,7 +756,7 @@ class SvgToAndroidConverter {
     private fun parseColor(color: String, opacity: Double): String {
         if (color == "none") return "#00000000"
         var c = color.removePrefix("#").uppercase()
-        if (c.length == 3) c = "" + c[0] + c[0] + c[1] + c[1] + c[2] + c[2]
+        if (c.length == 3) c = "" + c[0] + c[0] + x[1] + c[1] + c[2] + c[2]
         val alpha = (opacity * 255.0).roundToInt().coerceIn(0, 255).toString(16).padStart(2, '0').uppercase()
         return "#" + alpha + (if (c.length == 6) c else "000000")
     }
